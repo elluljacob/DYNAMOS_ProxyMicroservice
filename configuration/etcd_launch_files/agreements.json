@@ -64,5 +64,32 @@
     {
         "name": "RUG",
         "relations": {}
+    },
+    {
+        "name": "EXT-PROVIDER",
+        "relations": {
+            "jacob.test@example.com": {
+                "ID": "GUID",
+                "requestTypes": [
+                    "sqlDataRequest",
+                    "genericRequest"
+                ],
+                "dataSets": [
+                    "external_data"
+                ],
+                "allowedArchetypes": [
+                    "computeToData"
+                ],
+                "allowedComputeProviders": [
+                    "SURF"
+                ]
+            }
+        },
+        "computeProviders": [
+            "SURF"
+        ],
+        "archetypes": [
+            "computeToData"
+        ]
     }
 ]

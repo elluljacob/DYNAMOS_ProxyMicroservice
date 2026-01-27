@@ -1,0 +1,85 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ext-provider
+  namespace: ext-provider
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ext-provider
+  template:
+    metadata:
+      labels:
+        app: ext-provider
+      annotations:
+        "linkerd.io/inject" : enabled
+        "config.linkerd.io/skip-inbound-ports": "8080"
+    spec:
+      serviceAccountName: job-creator-ext-provider
+      containers:
+        - name: ext-provider
+          image: {{ .Values.dockerArtifactAccount }}/ext-provider:{{ .Values.branchNameTag }}
+          imagePullPolicy: Always
+          env:
+            - name: DATA_STEWARD_NAME
+              value: EXT-PROVIDER
+            - name: OC_AGENT_HOST
+              value: {{ .Values.tracingEndpoint }} # Stick to the template variable!
+            - name: DESIGNATED_GRPC_PORT
+              value: "8081"
+            - name: FIRST
+              value: "1"  # 1 for True (since this is the entry point)
+            - name: LAST
+              value: "1"  # 1 for True (if this is the only service for now)
+            - name: JOB_NAME
+              value: "ext-provider-job"
+            - name: SIDECAR_PORT
+              value: "50051" # Default port the sidecar listens on
+        - name: sidecar
+          image: {{ .Values.dockerArtifactAccount }}/sidecar:{{ .Values.branchNameTag }}
+          imagePullPolicy: Always
+          env:
+            - name: AMQ_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: rabbit
+                  key: password
+            - name: AMQ_USER
+              value: normal_user
+            - name: OC_AGENT_HOST
+              value: {{ .Values.tracingEndpoint }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ext-provider
+  namespace: ext-provider
+spec:
+  selector:
+    app: ext-provider
+  ports:
+    - name: http-ext-provider-api
+      protocol: TCP
+      port: 8080
+      targetPort: 8080
+  type: ClusterIP
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ext-provider-ingress
+  namespace: ext-provider
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: ext-provider.ext-provider.svc.cluster.local
+      http:
+        paths:
+          - pathType: Prefix
+            path: "/agent/v1/sqlDataRequest/ext-provider"
+            backend:
+              service:
+                name: ext-provider
+                port:
+                  number: 8080

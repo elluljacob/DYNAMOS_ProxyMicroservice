@@ -6,7 +6,6 @@ rules:
 - apiGroups: ["batch", "extensions"]
   resources: ["jobs"]
   verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -19,9 +18,13 @@ kind: ServiceAccount
 metadata:
   name: job-creator-vu
   namespace: vu
-
 ---
-
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: job-creator-ext-provider
+  namespace: ext-provider
+---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
@@ -50,3 +53,19 @@ subjects:
 - kind: ServiceAccount
   name: job-creator-vu
   namespace: vu
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: job-creator-ext-provider
+  namespace: ext-provider
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: job-creator
+subjects:
+  - kind: ServiceAccount
+    name: job-creator-ext-provider
+    namespace: ext-provider
+---

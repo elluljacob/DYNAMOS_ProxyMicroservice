@@ -2,9 +2,61 @@
 
 set -e
 
+echo "Performing a deep clean of existing resources..."
+
+STUCK_NAMESPACES=("api-gateway" "core" "orchestrator" "uva" "vu" "ext-provider" "ext-provider-agent")
+
+for ns in "${STUCK_NAMESPACES[@]}"; do
+    echo "Killing namespace: $ns"
+    # 1. Export the namespace to JSON
+    # 2. Use jq to strip out the finalizers
+    # 3. PUT it back to the cluster via the finalize endpoint
+    kubectl get namespace "$ns" -o json | \
+    jq '.spec.finalizers = []' | \
+    curl -X PUT http://localhost:8001/api/v1/namespaces/$ns/finalize \
+    -H "Content-Type: application/json" \
+    --data-binary @-
+    echo -e "\n---"
+done
+
+# Uninstall existing Helm releases to clear metadata
+helm uninstall agents orchestrator core namespaces surf api-gateway -n default 2>/dev/null || true
+helm uninstall agents -n agents 2>/dev/null || true
+
+# Delete Cluster-wide resources 
+kubectl delete clusterrole core-cluster-role promtail job-creator --ignore-not-found
+kubectl delete clusterrolebinding core-cluster-role-binding promtail job-creator-uva job-creator-vu job-creator-binding-ext --ignore-not-found
+kubectl delete serviceaccount job-creator-ext-provider-agent -n ext-provider-agent --ignore-not-found
+kubectl delete rolebinding job-creator-ext-provider-agent -n ext-provider-agent --ignore-not-found
+kubectl delete serviceaccount job-creator-uva -n uva --ignore-not-found
+kubectl delete serviceaccount job-creator-vu -n vu --ignore-not-found
+kubectl delete rolebinding job-creator-uva -n uva --ignore-not-found
+kubectl delete rolebinding job-creator-vu -n vu --ignore-not-found
+echo "Initiating forced deletion (non-blocking)..."
+kubectl delete ns uva vu agents orchestrator core api-gateway ext-provider ext-provider-agent --force --grace-period=0 --ignore-not-found --wait=false
+
+# This ensures that even if they are stuck, they are removed.
+for ns in uva vu agents orchestrator core api-gateway ext-provider ext-provider-agent; do
+    if kubectl get ns "$ns" >/dev/null 2>&1; then
+        echo "Removing finalizers for stuck namespace: $ns"
+        kubectl get namespace "$ns" -o json | jq '.spec.finalizers = []' > temp.json
+        kubectl replace --raw "/api/v1/namespaces/$ns/finalize" -f temp.json
+        rm temp.json
+    fi
+done
+
+# Give it a few seconds to clear
+sleep 5
+
+# 4. Clear Jaeger/Linkerd remnants if they exist
+kubectl delete service jaeger-collector-nodeport -n linkerd-jaeger --ignore-not-found
+
+echo "Cleanup complete. Starting installation..."
+
 # Change this to the path of the DYNAMOS repository on your disk
 echo "Setting up paths..."
 DYNAMOS_ROOT="${HOME}/DYNAMOS"
+BASE_PATH="$(cd "$(dirname "$0")/.." && pwd)"
 
 # Charts
 charts_path="${DYNAMOS_ROOT}/charts"
@@ -67,7 +119,12 @@ helm repo update
 helm upgrade -i -f "${core_chart}/prometheus-values.yaml" prometheus prometheus-community/prometheus
 
 echo "Installing NGINX..."
-helm install -f "${core_chart}/ingress-values.yaml" nginx oci://ghcr.io/nginxinc/charts/nginx-ingress -n ingress --version 0.18.0
+# helm install -f "${core_chart}/ingress-values.yaml" nginx oci://ghcr.io/nginxinc/charts/nginx-ingress -n ingress --version 0.18.0
+helm upgrade -i nginx oci://ghcr.io/nginxinc/charts/nginx-ingress \
+  --namespace ingress \
+  --create-namespace \
+  --version 0.18.0 \
+  -f "${core_chart}/ingress-values.yaml"
 
 echo "Installing DYNAMOS core..."
 helm upgrade -i -f ${core_chart}/values.yaml core ${core_chart} --set hostPath=${HOME}

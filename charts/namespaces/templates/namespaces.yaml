@@ -142,3 +142,25 @@ metadata:
 type: Opaque
 data:
   password: {{ .Values.secret.password | b64enc | quote }}
+
+---
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ext-provider
+  annotations:
+    "helm.sh/resource-policy": keep
+    "app.kubernetes.io/managed-by": "Helm"
+    "config.linkerd.io/trace-collector": collector.linkerd-jaeger:55678
+
+---
+
+apiVersion: v1
+kind: Secret
+metadata:
+  name: rabbit
+  namespace: ext-provider
+type: Opaque
+data:
+  password: {{ .Values.secret.password | b64enc | quote }}
