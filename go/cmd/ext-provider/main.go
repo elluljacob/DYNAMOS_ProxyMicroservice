@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,11 +14,11 @@ import (
 	"github.com/Jorrit05/DYNAMOS/pkg/etcd"
 	"github.com/Jorrit05/DYNAMOS/pkg/lib"
 	"github.com/Jorrit05/DYNAMOS/pkg/msinit"
+	pb "github.com/Jorrit05/DYNAMOS/pkg/proto"
 	"github.com/gorilla/handlers"
+	_ "github.com/snowflakedb/gosnowflake"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.opencensus.io/plugin/ochttp"
-
-	pb "github.com/Jorrit05/DYNAMOS/pkg/proto"
 )
 
 var (
@@ -28,6 +30,7 @@ var (
 	etcdClient  *clientv3.Client = etcd.GetEtcdClient(etcdEndpoints)
 )
 
+// messageHandler remains largely the same, waiting for the HTTP trigger
 func messageHandler(config *msinit.Configuration) func(ctx context.Context, msComm *pb.MicroserviceCommunication) error {
 	return func(ctx context.Context, msComm *pb.MicroserviceCommunication) error {
 		ctx, span, err := lib.StartRemoteParentSpan(ctx, serviceName+"/func: messageHandler", msComm.Traces)
@@ -35,33 +38,19 @@ func messageHandler(config *msinit.Configuration) func(ctx context.Context, msCo
 			logger.Sugar().Warnf("Error starting span: %v", err)
 		}
 		defer span.End()
-		// Wait till all services are ready
+
+		// Logic waits here until simpleLogHandler is called
 		<-COORDINATOR
 
 		switch msComm.RequestType {
-		case "sqlDataRequest": // Using your example request type
-			logger.Debug("[EXT_PROVIDER] Received request from user")
-			logger.Debug("[EXT_PROVIDER] Simulating data retrieval for query")
-
-			// Logic: Here you would call your external API.
-			// For now, we just log and move on.
+		case "sqlDataRequest":
+			logger.Debug("[EXT_PROVIDER] Received request from user, proceeding to forward.")
 		case "compositionRequest":
 			logger.Debug("Received compositionRequest - Setting up environment")
-			// compositionRequest := &pb.CompositionRequest{}
-			// grpcMsg.Body.UnmarshalTo(compositionRequest)
-
-			// // 1. Register the job so the system knows we are ready
-			// registerUserWithJob(ctx, compositionRequest)
-
-			// 2. Create the local queue for this job
-			// In the real code, this is localJobname (e.g., jacob-test...ext_provider1)
-			// handleQueue(ctx, compositionRequest.JobName, compositionRequest.LocalJobName, ...)
-
 		default:
 			logger.Sugar().Warnf("Unknown RequestType: %v", msComm.RequestType)
 		}
 
-		// Forward to the next service in the chain
 		config.NextClient.SendData(ctx, msComm)
 		close(config.StopMicroservice)
 		return nil
@@ -69,9 +58,6 @@ func messageHandler(config *msinit.Configuration) func(ctx context.Context, msCo
 }
 
 func main() {
-	logger.Sugar().Infof("(DEBUG) Log level: %v, addr: %s", logLevel, grpcAddr)
-	logger.Sugar().Infof("Using latest version")
-	logger.Sugar().Debugf("Starting %s service", serviceName)
 	serviceName = os.Getenv("DATA_STEWARD_NAME")
 	if serviceName == "" {
 		serviceName = "EXT-PROVIDER"
@@ -87,21 +73,15 @@ func main() {
 		logger.Sugar().Fatalf("%v", err)
 	}
 
-	logger.Sugar().Info("Registering agent with etcd...")
-
 	go func() {
 		headersOk := handlers.AllowedHeaders([]string{"X-Requested-With", "Content-Type", "Authorization"})
 		originsOk := handlers.AllowedOrigins([]string{"*"})
 		methodsOk := handlers.AllowedMethods([]string{"GET", "HEAD", "POST", "PUT", "OPTIONS"})
 
 		agentMux := http.NewServeMux()
-		// Path: /agent/v1/sqlDataRequest/ext-provider
 		path := fmt.Sprintf("/agent/v1/sqlDataRequest/%s", strings.ToLower(serviceName))
 
-		// Use the simplified logger handler you asked for
 		agentMux.Handle(path, &ochttp.Handler{Handler: simpleLogHandler()})
-
-		// Wrap with the auth middleware you provided
 		wrappedMux := authMiddleware(agentMux)
 
 		logger.Sugar().Infof("Starting http server on port %s and path %s", port, path)
@@ -109,14 +89,9 @@ func main() {
 			logger.Sugar().Fatalf("Error starting HTTP server: %v", err)
 		}
 	}()
-	// --- HTTP SERVER LOGIC END ---
 
-	logger.Sugar().Info("Registering agent with etcd...")
 	registerAgent()
-
-	// Wait until the workflow finishes
 	<-config.StopMicroservice
-
 	config.SafeExit(oce, serviceName)
 	os.Exit(0)
 }
@@ -139,20 +114,61 @@ func authMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// Add this struct at the top of your file or inside the handler
+type DataRequest struct {
+	Query string `json:"query"`
+}
+
 func simpleLogHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		logger.Sugar().Infof("[HTTP] %s request on %s", r.Method, r.URL.Path)
 
-		// If it's a GET, we won't have a body!
-		if r.Method == http.MethodGet {
-			logger.Sugar().Warn("Received GET request, but expected POST with data")
+		body, _ := io.ReadAll(r.Body)
+
+		// --- NEW: Parse the JSON body ---
+		var req DataRequest
+		// We use a generic map or a specific struct to get the nested query
+		// Based on your logs, the 'query' is at the top level of the POST body
+		if err := json.Unmarshal(body, &req); err != nil {
+			logger.Sugar().Errorf("Failed to parse JSON body: %v", err)
+			// Fallback to raw body if JSON fails
+			req.Query = string(body)
 		}
 
-		body, _ := io.ReadAll(r.Body) // Standard library way to double-check
-		logger.Sugar().Infof("[HTTP] Raw Body Length: %d characters", len(body))
-		logger.Sugar().Infof("[HTTP] Request Body: %s", string(body))
+		if req.Query == "" {
+			req.Query = "SELECT COUNT(*) FROM EMPLOYEES"
+		}
 
-		// Trigger the coordinator so the gRPC side continues
+		logger.Sugar().Infof("[HTTP] Extracted SQL Query: %s", req.Query)
+
+		// --- Snowflake Connection ---
+		dsn := "user:pass@10.40.11.218:9090/TEST_DB/PUBLIC?account=test&protocol=http"
+		db, err := sql.Open("snowflake", dsn)
+		if err != nil {
+			logger.Sugar().Errorf("DB Connection Error: %v", err)
+			w.Write([]byte(fmt.Sprintf("Error: %v", err)))
+			return
+		}
+		defer db.Close()
+
+		rows, err := db.Query(req.Query)
+		if err != nil {
+			logger.Sugar().Errorf("Query Execution Error: %v", err)
+			w.Write([]byte(fmt.Sprintf("SQL Error: %v", err)))
+			return
+		}
+		defer rows.Close()
+
+		var result strings.Builder
+		for rows.Next() {
+			var val interface{}
+			if err := rows.Scan(&val); err != nil {
+				continue
+			}
+			result.WriteString(fmt.Sprintf("%v", val))
+		}
+
+		// Trigger coordinator
 		select {
 		case <-COORDINATOR:
 		default:
@@ -160,6 +176,6 @@ func simpleLogHandler() http.HandlerFunc {
 		}
 
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("Received"))
+		w.Write([]byte(result.String()))
 	}
 }
