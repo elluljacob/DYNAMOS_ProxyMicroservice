@@ -30,7 +30,6 @@ var (
 	etcdClient  *clientv3.Client = etcd.GetEtcdClient(etcdEndpoints)
 )
 
-// messageHandler remains largely the same, waiting for the HTTP trigger
 func messageHandler(config *msinit.Configuration) func(ctx context.Context, msComm *pb.MicroserviceCommunication) error {
 	return func(ctx context.Context, msComm *pb.MicroserviceCommunication) error {
 		ctx, span, err := lib.StartRemoteParentSpan(ctx, serviceName+"/func: messageHandler", msComm.Traces)
@@ -114,7 +113,6 @@ func authMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// Add this struct at the top of your file or inside the handler
 type DataRequest struct {
 	Query string `json:"query"`
 }
@@ -125,10 +123,8 @@ func simpleLogHandler() http.HandlerFunc {
 
 		body, _ := io.ReadAll(r.Body)
 
-		// --- NEW: Parse the JSON body ---
 		var req DataRequest
-		// We use a generic map or a specific struct to get the nested query
-		// Based on your logs, the 'query' is at the top level of the POST body
+
 		if err := json.Unmarshal(body, &req); err != nil {
 			logger.Sugar().Errorf("Failed to parse JSON body: %v", err)
 			// Fallback to raw body if JSON fails
