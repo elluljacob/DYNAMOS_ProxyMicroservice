@@ -23,7 +23,7 @@ func registerAgent() {
 		Dns:           fmt.Sprintf("%s.%s.svc.cluster.local", strings.ToLower(serviceName), strings.ToLower(serviceName)),
 	}
 
-	// Serialize agent configuration data as JSON
+	// Serialise agent configuration data as JSON
 	configData, err := json.Marshal(agentConfig)
 	if err != nil {
 		log.Fatal(err)
@@ -37,7 +37,7 @@ func updateAgent() {
 	now := time.Now()
 	agentConfig.ConfigUpdated = &now
 
-	// Serialize agent configuration data as JSON
+	// Serialise agent configuration data as JSON
 	configData, err := json.Marshal(agentConfig)
 	if err != nil {
 		log.Fatal(err)
