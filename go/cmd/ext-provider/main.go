@@ -37,6 +37,18 @@ func main() {
 		logger.Sugar().Fatalf("Failed to create ocagent-exporter: %v", err)
 	}
 
+	logger.Info("Initializing Etcd Client...")
+	etcdClient = etcd.GetEtcdClient(etcdEndpoints)
+	if etcdClient == nil {
+		logger.Fatal("Failed to create Etcd client")
+	}
+
+	logger.Debug("Initializing Snowflake Database Connection...")
+	if err := InitDB(); err != nil {
+		logger.Sugar().Fatalf("Failed to initialize database: %v", err)
+	}
+	logger.Debug("Database connection established successfully.")
+
 	// Init DYNAMOS/Sidecar Config
 	// Note: We pass SidecarHandler from sidecar.go
 	config, err := msinit.NewConfiguration(context.Background(), serviceName, grpcAddr, COORDINATOR, SidecarHandler)

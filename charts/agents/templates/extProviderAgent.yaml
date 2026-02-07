@@ -25,7 +25,7 @@ spec:
             - name: DATA_STEWARD_NAME
               value: EXT-PROVIDER
             - name: SNOWFLAKE_DSN
-              value: "user:pass@10.40.10.170:9090/TEST_DB/PUBLIC?account=test&protocol=http"
+              value: "user:pass@host.docker.internal:9090/TEST_DB/PUBLIC?account=test&protocol=http"
             - name: OC_AGENT_HOST
               value: {{ .Values.tracingEndpoint }} 
             - name: DESIGNATED_GRPC_PORT

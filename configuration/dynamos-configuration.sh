@@ -51,12 +51,15 @@ sleep 5
 # 4. Clear Jaeger/Linkerd remnants if they exist
 kubectl delete service jaeger-collector-nodeport -n linkerd-jaeger --ignore-not-found
 
-echo "Cleanup complete. Starting installation..."
+# echo "Cleanup complete. Starting installation..."
 
 # Change this to the path of the DYNAMOS repository on your disk
 echo "Setting up paths..."
-DYNAMOS_ROOT="${HOME}/DYNAMOS"
-BASE_PATH="$(cd "$(dirname "$0")/.." && pwd)"
+DYNAMOS_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+BASE_PATH="${DYNAMOS_ROOT}"
+printf "DYNAMOS_ROOT set to: %s\n" "$DYNAMOS_ROOT"
+printf "BASE_PATH set to: %s\n" "$BASE_PATH"
 
 # Charts
 charts_path="${DYNAMOS_ROOT}/charts"

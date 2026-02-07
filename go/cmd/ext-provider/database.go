@@ -6,49 +6,112 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	_ "github.com/snowflakedb/gosnowflake"
 )
 
-// QuerySnowflake handles the connection lifecycle and execution
-func QuerySnowflake(ctx context.Context, query string) (string, error) {
-	// Get DSN (Environment Variable)
+// Global DB instance to prevent re-authenticating on every request
+var (
+	snowflakeDB *sql.DB
+	dbOnce      sync.Once
+)
+
+// InitDB should be called in your main() function at startup
+func InitDB() error {
+	var err error
 	dsn := os.Getenv("SNOWFLAKE_DSN")
 
-	// Open Connection
-	db, err := sql.Open("snowflake", dsn)
+	// Open doesn't connect, it just validates arguments
+	snowflakeDB, err = sql.Open("snowflake", dsn)
 	if err != nil {
-		return "", fmt.Errorf("failed to open snowflake connection: %w", err)
+		return fmt.Errorf("failed to open snowflake driver: %w", err)
 	}
-	defer db.Close()
 
-	// 5-second timeout on the DB execution (rn shouldn't take long so this is fine but change later )
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	// configure connection pool settings if needed
+	snowflakeDB.SetMaxOpenConns(10)
+	snowflakeDB.SetMaxIdleConns(5)
+	snowflakeDB.SetConnMaxLifetime(1 * time.Hour)
+
+	// Verify connection immediately
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Execute
+	if err := snowflakeDB.PingContext(ctx); err != nil {
+		return fmt.Errorf("failed to ping snowflake: %w", err)
+	}
+
+	return nil
+}
+
+// QuerySnowflake handles the execution using the existing pool
+func QuerySnowflake(ctx context.Context, query string) (string, error) {
+	if snowflakeDB == nil {
+		// Fallback or lazy init if InitDB wasn't called (safety net)
+		if err := InitDB(); err != nil {
+			return "Error Init DB", err
+		}
+	}
+
+	// 1. Use a separate timeout for the Query, not the connection
+	// Increased to 15s to be safe for complex queries
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
 	logger.Debug("Attempting to query Snowflake...")
-	rows, err := db.QueryContext(ctx, query)
+
+	// 2. QueryContext
+	rows, err := snowflakeDB.QueryContext(ctx, query)
 	if err != nil {
-		return "", fmt.Errorf("query execution failed: %w", err)
+		return "Error executing query", err // Return raw error to handler for inspection
 	}
 	defer rows.Close()
 
-	// Scan Results
+	// 3. Scan Results safely
 	var result strings.Builder
+	var hasResults bool
+
+	// Get column names to handle dynamic results better (optional)
+	columns, _ := rows.Columns()
+	count := len(columns)
+	values := make([]interface{}, count)
+	valuePtrs := make([]interface{}, count)
+
 	for rows.Next() {
-		var val interface{}
-		if err := rows.Scan(&val); err != nil {
-			continue
+		hasResults = true
+		// Initialize pointers
+		for i := range columns {
+			valuePtrs[i] = &values[i]
 		}
-		result.WriteString(fmt.Sprintf("%v", val))
+
+		if err := rows.Scan(valuePtrs...); err != nil {
+			return "Error scanning row", fmt.Errorf("row scan failed: %w", err)
+		}
+
+		// Simple formatter, can be enhanced to JSON or table format if needed
+		for i, val := range values {
+			if i > 0 {
+				result.WriteString(", ")
+			}
+			// Handle nil/bytes/etc
+			switch v := val.(type) {
+			case []byte:
+				result.Write(v)
+			default:
+				result.WriteString(fmt.Sprintf("%v", v))
+			}
+		}
 	}
 
-	finalResult := result.String()
-	if finalResult == "" {
+	// 4. CRITICAL: Check for errors that occurred *during* iteration
+	if err := rows.Err(); err != nil {
+		return "Error during row iteration", fmt.Errorf("error during row iteration: %w", err)
+	}
+
+	if !hasResults {
 		return "0", nil
 	}
 
-	return finalResult, nil
+	return result.String(), nil
 }
