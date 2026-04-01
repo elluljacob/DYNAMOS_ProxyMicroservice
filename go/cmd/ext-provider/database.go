@@ -18,7 +18,6 @@ var (
 	dbOnce      sync.Once
 )
 
-// InitDB should be called in your main() function at startup
 func InitDB() error {
 	var err error
 	dsn := os.Getenv("SNOWFLAKE_DSN")
@@ -54,25 +53,24 @@ func QuerySnowflake(ctx context.Context, query string) (string, error) {
 		}
 	}
 
-	// 1. Use a separate timeout for the Query, not the connection
-	// Increased to 15s to be safe for complex queries
+	// Use a timeout for the Query
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
 	logger.Debug("Attempting to query Snowflake...")
 
-	// 2. QueryContext
+	// QueryContext
 	rows, err := snowflakeDB.QueryContext(ctx, query)
 	if err != nil {
 		return "Error executing query", err // Return raw error to handler for inspection
 	}
 	defer rows.Close()
 
-	// 3. Scan Results safely
+	// Scan Results
 	var result strings.Builder
 	var hasResults bool
 
-	// Get column names to handle dynamic results better (optional)
+	// Get column names to handle dynamic results better
 	columns, _ := rows.Columns()
 	count := len(columns)
 	values := make([]interface{}, count)
@@ -89,7 +87,7 @@ func QuerySnowflake(ctx context.Context, query string) (string, error) {
 			return "Error scanning row", fmt.Errorf("row scan failed: %w", err)
 		}
 
-		// Simple formatter, can be enhanced to JSON or table format if needed
+		// Simple formatter
 		for i, val := range values {
 			if i > 0 {
 				result.WriteString(", ")
@@ -104,7 +102,7 @@ func QuerySnowflake(ctx context.Context, query string) (string, error) {
 		}
 	}
 
-	// 4. CRITICAL: Check for errors that occurred *during* iteration
+	// Check for errors that occurred *during* iteration
 	if err := rows.Err(); err != nil {
 		return "Error during row iteration", fmt.Errorf("error during row iteration: %w", err)
 	}

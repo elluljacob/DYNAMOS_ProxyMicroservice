@@ -8,15 +8,12 @@ STUCK_NAMESPACES=("api-gateway" "core" "orchestrator" "uva" "vu" "ext-provider" 
 
 for ns in "${STUCK_NAMESPACES[@]}"; do
     echo "Killing namespace: $ns"
-    # 1. Export the namespace to JSON
-    # 2. Use jq to strip out the finalizers
-    # 3. PUT it back to the cluster via the finalize endpoint
-    kubectl get namespace "$ns" -o json | \
-    jq '.spec.finalizers = []' | \
-    curl -X PUT http://localhost:8001/api/v1/namespaces/$ns/finalize \
-    -H "Content-Type: application/json" \
-    --data-binary @-
-    echo -e "\n---"
+    if kubectl get ns "$ns" >/dev/null 2>&1; then
+        kubectl get namespace "$ns" -o json \
+            | jq '.spec.finalizers = []' \
+            | kubectl replace --raw "/api/v1/namespaces/$ns/finalize" -f -
+        echo -e "\n---"
+    fi
 done
 
 # Uninstall existing Helm releases to clear metadata

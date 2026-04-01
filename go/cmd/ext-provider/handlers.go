@@ -14,7 +14,7 @@ type DataRequest struct {
 	Query string `json:"query"`
 }
 
-// HandleSQLRequest is the main HTTP handler for the agent
+// main HTTP handler for the agent
 func HandleSQLRequest() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		logger.Sugar().Infof("[HTTP] %s request on %s", r.Method, r.URL.Path)
@@ -43,7 +43,7 @@ func HandleSQLRequest() http.HandlerFunc {
 	}
 }
 
-// handleDBError maps Go errors to HTTP status codes nicely
+// maps Go errors to HTTP status codes
 func handleDBError(w http.ResponseWriter, err error) {
 	// 1. Log the full technical error for you (the admin)
 	logger.Sugar().Errorf("DB Execution Error: %v", err)
@@ -55,18 +55,17 @@ func handleDBError(w http.ResponseWriter, err error) {
 	lowerErr := strings.ToLower(clientMsg)
 
 	switch {
-	// 1. Timeouts (Context Deadline)
+	// Timeouts (Context Deadline)
 	case errors.Is(err, context.DeadlineExceeded) || strings.Contains(lowerErr, "context deadline"):
 		statusCode = http.StatusGatewayTimeout // 504
 		clientMsg = "Query timed out. The database took too long to respond."
 
-	// 2. Client Cancelled
+	// Client Cancelled
 	case errors.Is(err, context.Canceled):
 		statusCode = 499 // Client Closed Request
 		clientMsg = "Request cancelled by client."
 
-	// 3. SQL Syntax / Logic Errors (Snowflake specific)
-	// "001007" is the Snowflake code for SQL compilation error
+	// SQL Syntax / Logic Errors
 	case strings.Contains(lowerErr, "syntax error") ||
 		strings.Contains(lowerErr, "compilation error") ||
 		strings.Contains(lowerErr, "does not exist") ||
@@ -74,22 +73,18 @@ func handleDBError(w http.ResponseWriter, err error) {
 		strings.Contains(lowerErr, "invalid identifier"):
 
 		statusCode = http.StatusBadRequest // 400
-		// CRITICAL: We Keep 'clientMsg' as the original error (err.Error())
-		// so the user sees "Did you mean 'count'?"
 
-	// 4. Connection issues
+	// Connection issues
 	case strings.Contains(lowerErr, "connection failed") || strings.Contains(lowerErr, "failed to open"):
 		statusCode = http.StatusServiceUnavailable // 503
 		clientMsg = "Database service unavailable. Please try again later."
 
-	// 5. Default Generic Error
+	// Default Generic Error
 	default:
 		statusCode = http.StatusInternalServerError // 500
-		// For generic 500s, usually safer to hide details, but for dev we show it
 		clientMsg = fmt.Sprintf("Internal Database Error: %v", err)
 	}
 
-	// 6. Write the response
 	// Set Content-Type so clients know it's text
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(statusCode)
