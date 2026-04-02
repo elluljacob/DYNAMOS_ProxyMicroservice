@@ -1,0 +1,753 @@
+openapi: 3.0.3
+info:
+  title: DYNAMOS Orchestrator API
+  description: |
+    Configuration and orchestration API for the DYNAMOS system.
+    
+    The orchestrator is the central management service responsible for:
+    - Storing and serving configuration data (archetypes, request types,
+      microservice metadata, agreements) via etcd
+    - Processing data request approvals and composing execution workflows
+    - Managing policy enforcer agreements and forwarding policy updates
+    
+    ## Configuration Management
+    All configuration endpoints follow a generic CRUD pattern backed by etcd.
+    - **GET** without a path suffix returns all items as an array
+    - **GET** with `/{name}` returns a single item by its name
+    - **PUT** creates or updates an item (the `name` field in the body is used
+      as the etcd key)
+    
+    ## Architecture
+    ```
+    ┌─────────────────────────────────────────────────────────────────────┐
+    │                          HTTP API Layer                             │
+    │  /api/v1/archetypes    /api/v1/requestTypes    /api/v1/microservices│
+    │  /api/v1/policyEnforcer                        /api/v1/updateEtc   │
+    └───────────────────────────────┬─────────────────────────────────────┘
+                                    │
+                                    ▼
+    ┌─────────────────────────────────────────────────────────────────────┐
+    │                           etcd Store                                │
+    │  /archetypes/*   /requestTypes/*   /microservices/*                  │
+    │  /policyEnforcer/agreements/*      /policyEnforcer/configs/*         │
+    │  /datasets/*     /agents/*                                          │
+    └─────────────────────────────────────────────────────────────────────┘
+    ```
+  version: 1.0.0
+  contact:
+    name: Niels Arts
+
+servers:
+  - url: http://orchestrator.orchestrator.svc.cluster.local:80
+    description: In-cluster production server
+paths:
+  # ---------------------------------------------------------------------------
+  # Archetype Endpoints
+  # ---------------------------------------------------------------------------
+  /api/v1/archetypes:
+    get:
+      summary: List all archetypes
+      description: |
+        Returns all archetypes stored in etcd under `/archetypes`.
+        Archetypes define how data processing is distributed between
+        providers (e.g. `computeToData`, `dataThroughTtp`).
+      operationId: listArchetypes
+      tags:
+        - Archetypes
+      responses:
+        '200':
+          description: List of all archetypes
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Archetype'
+              example:
+                - name: "computeToData"
+                  computeProvider: "self"
+                  resultRecipient: "requester"
+                  weight: 1
+                - name: "dataThroughTtp"
+                  computeProvider: "other"
+                  resultRecipient: "requester"
+                  weight: 2
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    put:
+      summary: Create or update an archetype
+      description: |
+        Creates or updates an archetype in etcd. The `name` field in the
+        request body is used as the key.
+      operationId: putArchetype
+      tags:
+        - Archetypes
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Archetype'
+            example:
+              name: "computeToData"
+              computeProvider: "self"
+              resultRecipient: "requester"
+              weight: 1
+      responses:
+        '200':
+          description: Archetype created/updated successfully
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: "OK"
+        '400':
+          description: Bad request – invalid body or missing `name` field
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: "Payload must be JSON and contain a 'name' field"
+        '500':
+          description: Internal server error
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /api/v1/archetypes/{name}:
+    get:
+      summary: Get an archetype by name
+      description: Returns a single archetype by its name.
+      operationId: getArchetype
+      tags:
+        - Archetypes
+      parameters:
+        - $ref: '#/components/parameters/ResourceNameParam'
+      responses:
+        '200':
+          description: Archetype found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Archetype'
+              example:
+                name: "computeToData"
+                computeProvider: "self"
+                resultRecipient: "requester"
+                weight: 1
+        '404':
+          description: Archetype not found
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: "Unknown request"
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # ---------------------------------------------------------------------------
+  # Request Type Endpoints
+  # ---------------------------------------------------------------------------
+  /api/v1/requestTypes:
+    get:
+      summary: List all request types
+      description: |
+        Returns all request types stored in etcd under `/requestTypes`.
+        Request types define the required and optional microservices for
+        each kind of data request (e.g. `sqlDataRequest`).
+      operationId: listRequestTypes
+      tags:
+        - Request Types
+      responses:
+        '200':
+          description: List of all request types
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/RequestType'
+              example:
+                - name: "sqlDataRequest"
+                  requiredServices:
+                    - "sql-algorithm"
+                  optionalServices:
+                    aggregate: "sql-aggregate"
+                    anonymize: "sql-anonymize"
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    put:
+      summary: Create or update a request type
+      description: |
+        Creates or updates a request type in etcd. The `name` field in the
+        body is used as the key.
+      operationId: putRequestType
+      tags:
+        - Request Types
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RequestType'
+            example:
+              name: "sqlDataRequest"
+              requiredServices:
+                - "sql-algorithm"
+              optionalServices:
+                aggregate: "sql-aggregate"
+                anonymize: "sql-anonymize"
+      responses:
+        '200':
+          description: Request type created/updated successfully
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: "OK"
+        '400':
+          description: Bad request – invalid body or missing `name` field
+          content:
+            text/plain:
+              schema:
+                type: string
+        '500':
+          description: Internal server error
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /api/v1/requestTypes/{name}:
+    get:
+      summary: Get a request type by name
+      description: Returns a single request type by its name.
+      operationId: getRequestType
+      tags:
+        - Request Types
+      parameters:
+        - $ref: '#/components/parameters/ResourceNameParam'
+      responses:
+        '200':
+          description: Request type found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RequestType'
+        '404':
+          description: Request type not found
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: "Unknown request"
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # ---------------------------------------------------------------------------
+  # Microservice Metadata Endpoints
+  # ---------------------------------------------------------------------------
+  /api/v1/microservices:
+    get:
+      summary: List all microservice metadata
+      description: |
+        Returns all microservice metadata entries stored in etcd under
+        `/microservices`. These define the labels, names, and allowed
+        outputs for each microservice in the processing chain.
+      operationId: listMicroservices
+      tags:
+        - Microservices
+      responses:
+        '200':
+          description: List of all microservice metadata
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/MicroserviceMetadata'
+              example:
+                - name: "sql-algorithm"
+                  label: "SQL Algorithm"
+                  allowedOutputs:
+                    - "sql-aggregate"
+                    - "sql-anonymize"
+                - name: "sql-aggregate"
+                  label: "SQL Aggregate"
+                  allowedOutputs: []
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    put:
+      summary: Create or update microservice metadata
+      description: |
+        Creates or updates microservice metadata in etcd. The `name` field
+        in the body is used as the key.
+      operationId: putMicroservice
+      tags:
+        - Microservices
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MicroserviceMetadata'
+            example:
+              name: "sql-algorithm"
+              label: "SQL Algorithm"
+              allowedOutputs:
+                - "sql-aggregate"
+                - "sql-anonymize"
+      responses:
+        '200':
+          description: Microservice metadata created/updated successfully
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: "OK"
+        '400':
+          description: Bad request – invalid body or missing `name` field
+          content:
+            text/plain:
+              schema:
+                type: string
+        '500':
+          description: Internal server error
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /api/v1/microservices/{name}:
+    get:
+      summary: Get microservice metadata by name
+      description: Returns a single microservice metadata entry by its name.
+      operationId: getMicroservice
+      tags:
+        - Microservices
+      parameters:
+        - $ref: '#/components/parameters/ResourceNameParam'
+      responses:
+        '200':
+          description: Microservice metadata found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MicroserviceMetadata'
+        '404':
+          description: Microservice metadata not found
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: "Unknown request"
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # ---------------------------------------------------------------------------
+  # Policy Enforcer / Agreement Endpoints
+  # ---------------------------------------------------------------------------
+  /api/v1/policyEnforcer:
+    get:
+      summary: List all agreements
+      description: |
+        Returns all policy agreements stored in etcd under
+        `/policyEnforcer/agreements`. Agreements define which requesters at
+        which organisations are allowed to access which datasets, request
+        types, archetypes, and compute providers.
+      operationId: listAgreements
+      tags:
+        - Policy Enforcer / Agreements
+      responses:
+        '200':
+          description: List of all agreements
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Agreement'
+              example:
+                - name: "VU"
+                  relations:
+                    jorrit.stutterheim@cloudnation.nl:
+                      ID: "jorrit.stutterheim@cloudnation.nl"
+                      requestTypes:
+                        - "sqlDataRequest"
+                      dataSets:
+                        - "wageGap"
+                      allowedArchetypes:
+                        - "computeToData"
+                        - "dataThroughTtp"
+                      allowedComputeProviders:
+                        - "SURF"
+                  computeProviders:
+                    - "SURF"
+                  archetypes:
+                    - "computeToData"
+                    - "dataThroughTtp"
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    put:
+      summary: Create or update an agreement
+      description: |
+        Creates or updates a policy agreement. The request body is forwarded
+        to the Policy Enforcer for validation before being stored.
+        
+        **Flow:**
+        1. The orchestrator sends a `policyUpdate` message with type
+           `agreementUpdate` to the Policy Enforcer via RabbitMQ.
+        2. The Policy Enforcer validates the agreement and responds.
+        3. If approved, the agreement is stored in etcd and any affected
+           running jobs are updated.
+        4. If rejected, a 400 error is returned.
+        
+        The call blocks for up to 30 seconds waiting for Policy Enforcer
+        validation.
+      operationId: putAgreement
+      tags:
+        - Policy Enforcer / Agreements
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Agreement'
+            examples:
+              vu_agreement:
+                summary: Agreement for the VU organisation
+                value:
+                  name: "VU"
+                  relations:
+                    jorrit.stutterheim@cloudnation.nl:
+                      ID: "jorrit.stutterheim@cloudnation.nl"
+                      requestTypes:
+                        - "sqlDataRequest"
+                      dataSets:
+                        - "wageGap"
+                      allowedArchetypes:
+                        - "computeToData"
+                        - "dataThroughTtp"
+                      allowedComputeProviders:
+                        - "SURF"
+                  computeProviders:
+                    - "SURF"
+                  archetypes:
+                    - "computeToData"
+                    - "dataThroughTtp"
+      responses:
+        '200':
+          description: Agreement validated by Policy Enforcer and stored
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: "OK"
+        '400':
+          description: |
+            Bad request – invalid body, missing `name` field, or policy
+            update rejected by the Policy Enforcer.
+          content:
+            text/plain:
+              schema:
+                type: string
+              examples:
+                bad_payload:
+                  value: "Payload must be JSON and contain a 'name' field"
+                rejected:
+                  value: "Policy update rejected by Policy Enforcer"
+        '504':
+          description: Timeout waiting for Policy Enforcer validation
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: "Timeout waiting for Policy Enforcer validation"
+        '500':
+          description: Internal server error
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /api/v1/policyEnforcer/{name}:
+    get:
+      summary: Get an agreement by name
+      description: Returns a single policy agreement by its name.
+      operationId: getAgreement
+      tags:
+        - Policy Enforcer / Agreements
+      parameters:
+        - $ref: '#/components/parameters/ResourceNameParam'
+      responses:
+        '200':
+          description: Agreement found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Agreement'
+        '404':
+          description: Agreement not found
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: "Unknown request"
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # ---------------------------------------------------------------------------
+  # Configuration Endpoints
+  # ---------------------------------------------------------------------------
+  /api/v1/updateEtc:
+    get:
+      summary: Reload all configurations into etcd
+      description: |
+        Triggers a full re-registration of all configuration data from the
+        on-disk JSON files into etcd. This loads:
+        - Request types (`requestType.json`)
+        - Archetypes (`archetype.json`)
+        - Microservice metadata (`microservices.json`)
+        - Agreements (`agreements.json`)
+        - Datasets (`datasets.json`)
+        - Optional microservices (`optional_microservices.json`)
+        - eFLINT models (`eflint-models/*.eflint`)
+        - Provider validation configs (`provider_configs.json`)
+        
+        Use this endpoint after modifying configuration files to apply changes
+        without restarting the orchestrator.
+      operationId: updateEtc
+      tags:
+        - Configuration
+      responses:
+        '200':
+          description: Configuration reload triggered successfully
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: "Updated all config"
+
+# -----------------------------------------------------------------------------
+# Components
+# -----------------------------------------------------------------------------
+components:
+  # ---------------------------------------------------------------------------
+  # Reusable Parameters
+  # ---------------------------------------------------------------------------
+  parameters:
+    ResourceNameParam:
+      name: name
+      in: path
+      required: true
+      description: The name/identifier of the resource
+      schema:
+        type: string
+      example: "computeToData"
+
+  # ---------------------------------------------------------------------------
+  # Schemas
+  # ---------------------------------------------------------------------------
+  schemas:
+    # -------------------------------------------------------------------------
+    # Archetype Schemas
+    # -------------------------------------------------------------------------
+    Archetype:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          description: Unique archetype identifier
+          example: "computeToData"
+        computeProvider:
+          type: string
+          description: |
+            Who provides compute resources.
+            - `self`: Each data steward processes locally (computeToData)
+            - `other`: A third-party compute provider is used (dataThroughTtp)
+          enum:
+            - self
+            - other
+          example: "self"
+        resultRecipient:
+          type: string
+          description: Who receives the final result
+          example: "requester"
+        weight:
+          type: integer
+          description: |
+            Priority weight for automatic archetype selection.
+            Lower weight = higher priority.
+          example: 1
+
+    # -------------------------------------------------------------------------
+    # Request Type Schemas
+    # -------------------------------------------------------------------------
+    RequestType:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          description: Unique request type identifier
+          example: "sqlDataRequest"
+        requiredServices:
+          type: array
+          items:
+            type: string
+          description: Microservices that are always included in the chain
+          example: ["sql-algorithm"]
+        optionalServices:
+          type: object
+          additionalProperties:
+            type: string
+          description: |
+            Map of option name → microservice name.
+            When the option is enabled in the data request, the corresponding
+            microservice is added to the chain.
+          example:
+            aggregate: "sql-aggregate"
+            anonymize: "sql-anonymize"
+
+    # -------------------------------------------------------------------------
+    # Microservice Metadata Schemas
+    # -------------------------------------------------------------------------
+    MicroserviceMetadata:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          description: Unique microservice identifier (matches the Docker image name)
+          example: "sql-algorithm"
+        label:
+          type: string
+          description: Human-readable label
+          example: "SQL Algorithm"
+        allowedOutputs:
+          type: array
+          items:
+            type: string
+          description: |
+            List of microservice names that this service is allowed to
+            send output to in the processing chain.
+          example: ["sql-aggregate", "sql-anonymize"]
+
+    # -------------------------------------------------------------------------
+    # Agreement Schemas
+    # -------------------------------------------------------------------------
+    Agreement:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          description: Agreement name (typically the organisation name)
+          example: "VU"
+        relations:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/Relation'
+          description: |
+            Map of requester identifier → their permissions.
+            Each key is typically a user email address.
+          example:
+            jorrit.stutterheim@cloudnation.nl:
+              ID: "jorrit.stutterheim@cloudnation.nl"
+              requestTypes: ["sqlDataRequest"]
+              dataSets: ["wageGap"]
+              allowedArchetypes: ["computeToData", "dataThroughTtp"]
+              allowedComputeProviders: ["SURF"]
+        computeProviders:
+          type: array
+          items:
+            type: string
+          description: Compute providers available under this agreement
+          example: ["SURF"]
+        archetypes:
+          type: array
+          items:
+            type: string
+          description: Archetypes allowed under this agreement
+          example: ["computeToData", "dataThroughTtp"]
+
+    Relation:
+      type: object
+      properties:
+        ID:
+          type: string
+          description: Requester identifier (typically an email)
+          example: "jorrit.stutterheim@cloudnation.nl"
+        requestTypes:
+          type: array
+          items:
+            type: string
+          description: Allowed request types for this requester
+          example: ["sqlDataRequest"]
+        dataSets:
+          type: array
+          items:
+            type: string
+          description: Datasets this requester may access
+          example: ["wageGap"]
+        allowedArchetypes:
+          type: array
+          items:
+            type: string
+          description: Archetypes this requester may use
+          example: ["computeToData", "dataThroughTtp"]
+        allowedComputeProviders:
+          type: array
+          items:
+            type: string
+          description: Compute providers this requester may use
+          example: ["SURF"]
+
+    # -------------------------------------------------------------------------
+    # Common Schemas
+    # -------------------------------------------------------------------------
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+          description: Error message
+          example: "Internal server error"

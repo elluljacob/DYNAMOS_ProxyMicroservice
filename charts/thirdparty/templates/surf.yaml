@@ -19,7 +19,6 @@ spec:
       containers:
       - name: surf
         image: {{ .Values.dockerArtifactAccount }}/agent:{{ .Values.branchNameTag }}
-        imagePullPolicy: Always
         ports:
         - containerPort: 8080
         env:
@@ -29,7 +28,6 @@ spec:
           value: {{ .Values.tracingEndpoint }}
       - name: sidecar
         image: {{ .Values.dockerArtifactAccount }}/sidecar:{{ .Values.branchNameTag }}
-        imagePullPolicy: Always
         env:
         - name: AMQ_PASSWORD
           valueFrom:

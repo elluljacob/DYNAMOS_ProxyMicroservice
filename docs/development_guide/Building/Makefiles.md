@@ -24,6 +24,13 @@ make agent
 3. Push to registry with tag of current GIT branch name
 4. Remove all copied files
 
+> [!NOTE]
+> `policy-enforcer` uses a service-specific Dockerfile at `go/cmd/policy-enforcer/Dockerfile` to build and bundle the `eflint-server` binary.
+> The Makefile target uses `docker buildx` and supports multi-arch builds via `PLATFORMS` (default: `linux/amd64,linux/arm64`).
+> If `PLATFORMS` contains multiple architectures, the build uses `--push` (registry required). For single-arch, it uses `--load`.
+> You can override the eFLINT source with:
+> `EFLINT_REPO=https://gitlab.com/eflint/haskell-implementation.git` and `EFLINT_TAG=v4.1.0.1`.
+
 ## Targets
 
 The number of services built can be specified with `targets`. 

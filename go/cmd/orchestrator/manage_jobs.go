@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Jorrit05/DYNAMOS/pkg/api"
@@ -64,53 +65,55 @@ func deleteJobInfo(jobNames []string, userName string, changedAgreementName stri
 		}
 	}
 }
-func checkJobs(agreement *api.Agreement) {
-	// compositionRequest := &pb.CompositionRequest{}
-	for relationName, relationDetails := range agreement.Relations {
 
-		key := fmt.Sprintf("/agents/jobs/%s/%s", agreement.Name, relationName)
+func checkJobs(agreementName string) {
+	key := fmt.Sprintf("/agents/jobs/%s/", agreementName)
+	jobKeys, err := etcd.GetKeysFromPrefix(etcdClient, key, etcd.WithMaxElapsedTime(2*time.Second))
+	if err != nil {
+		logger.Sugar().Warnf("error get jobs: %v", err)
+	}
 
-		// Get all jobnames registered for this user of the data steward of this agreement
-		jobNames, err := etcd.GetKeysFromPrefix(etcdClient, key, etcd.WithMaxElapsedTime(2*time.Second))
+	userNames := make(map[string]bool)
+	for _, k := range jobKeys {
+		parts := strings.Split(k, "/")
+		if len(parts) >= 6 {
+			userName := parts[4]
+			userNames[userName] = true
+		}
+	}
+
+	for userName := range userNames {
+		userKey := fmt.Sprintf("/agents/jobs/%s/%s", agreementName, userName)
+		jobNamesFull, err := etcd.GetKeysFromPrefix(etcdClient, userKey, etcd.WithMaxElapsedTime(2*time.Second))
 		if err != nil {
-			logger.Sugar().Warnf("error get agents: %v", err)
-		}
-		if len(jobNames) == 0 {
-			logger.Debug("no active jobs for this user")
-			return
-		}
-		for _, v := range jobNames {
-			logger.Sugar().Warnf(v)
-		}
-
-		// New agreement has no allowed archetypes
-		if len(relationDetails.AllowedArchetypes) == 0 || (relationDetails.AllowedArchetypes[0] == "" && len(relationDetails.AllowedArchetypes) == 1) {
-			logger.Debug("This user no has no allowed archetypes")
-			if len(jobNames) > 0 {
-				deleteJobInfo(jobNames, relationName, agreement.Name)
-			}
+			logger.Sugar().Warnf("error get jobs: %v", err)
 			continue
 		}
-		evaluateArchetypeInActiveJobs(jobNames, agreement, relationName, relationDetails, c)
 
-		// key := fmt.Sprintf("/agents/jobs/%s/%s/", agreement.Name, relationName)
-		// activeJobCompositionRequests, err := etcd.GetPrefixListEtcd(etcdClient, key, compositionRequest)
-		// if err != nil {
-		// 	logger.Sugar().Warnf("error get jobs: %v", err)
-		// }
+		var jobNames []string
+		for _, k := range jobNamesFull {
+			parts := strings.Split(k, "/")
+			if len(parts) >= 6 {
+				jobNames = append(jobNames, parts[5])
+			}
+		}
 
+		if len(jobNames) == 0 {
+			logger.Debug("no active jobs for this user")
+			continue
+		}
+
+		evaluateArchetypeInActiveJobs(jobNames, agreementName, userName, c)
 	}
 }
 
-func evaluateArchetypeInActiveJobs(jobNames []string, agreement *api.Agreement, relationName string, relationDetails api.Relation, c pb.RabbitMQClient) {
+func evaluateArchetypeInActiveJobs(jobNames []string, agreementName string, relationName string, c pb.RabbitMQClient) {
 	logger.Debug("starting evaluateArchetypeInActiveJobs")
 	ctx := context.Background()
-	// alue.ArchetypeId == archetype in current active job from the agreement name.
 
-	// for each job. Check current archetype. versus new archetypes.
 	for _, job := range jobNames {
 
-		jobInfoKey := fmt.Sprintf("/agents/jobs/%s/%s/%s", agreement.Name, relationName, job)
+		jobInfoKey := fmt.Sprintf("/agents/jobs/%s/%s/%s", agreementName, relationName, job)
 
 		resp, err := etcdClient.Get(ctx, jobInfoKey)
 		if err != nil {
@@ -131,7 +134,7 @@ func evaluateArchetypeInActiveJobs(jobNames []string, agreement *api.Agreement, 
 
 		policyUpdate := &pb.PolicyUpdate{
 			Type:            "policyUpdate",
-			User:            &pb.User{Id: relationDetails.ID, UserName: relationName},
+			User:            &pb.User{Id: relationName, UserName: relationName},
 			RequestMetadata: &pb.RequestMetadata{DestinationQueue: "policyEnforcer-in"},
 		}
 

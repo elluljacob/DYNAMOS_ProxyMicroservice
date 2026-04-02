@@ -1,0 +1,199 @@
+// DYNAMOS agreement model for RUG (University of Groningen)
+// Organization-specific eFLINT specification for per-provider validation
+//
+// This follows the eFLINT style described by van Binsbergen et al. (GPCE 2020).
+// Paper: "eFLINT: a domain-specific language for executable norm specifications".
+
+// Core Facts
+Fact organization        Identified by String
+Fact requester           Identified by String
+Fact compute-provider    Identified by String
+Fact data-set            Identified by String
+Fact archetype           Identified by String
+Fact request-type        Identified by String
+
+// Placeholders
+Placeholder org      For organization
+Placeholder req      For requester
+Placeholder provider For compute-provider
+Placeholder dataset  For data-set
+Placeholder arch     For archetype
+Placeholder rtype    For request-type
+
+// Agreement relations and whitelists
+Fact registered-with             Identified by org * req
+Fact available-compute-provider  Identified by org * provider
+Fact available-archetype         Identified by org * arch
+
+Fact allowed-request-type        Identified by org * req * rtype
+Fact allowed-data-set            Identified by org * req * dataset
+Fact allowed-archetype           Identified by org * req * arch
+Fact allowed-compute-provider    Identified by org * req * provider
+
+// Request event record
+Fact request-submitted           Identified by org * req * rtype * dataset * arch * provider
+
+// Administrative acts for managing agreements (registration and allow-lists)
+Act register-requester
+  Actor      org
+  Recipient  req
+  Creates    registered-with(org, req)
+  Holds when organization(org)
+         && requester(req).
+
+Act unregister-requester
+  Actor      org
+  Recipient  req
+  Terminates registered-with(org, req)
+  Holds when registered-with(org, req).
+
+Act add-available-compute-provider
+  Actor      org
+  Recipient  provider
+  Creates    available-compute-provider(org, provider)
+  Holds when organization(org)
+         && compute-provider(provider).
+
+Act remove-available-compute-provider
+  Actor      org
+  Recipient  provider
+  Terminates available-compute-provider(org, provider)
+  Holds when available-compute-provider(org, provider).
+
+Act add-available-archetype
+  Actor      org
+  Recipient  arch
+  Creates    available-archetype(org, arch)
+  Holds when organization(org)
+         && archetype(arch).
+
+Act remove-available-archetype
+  Actor      org
+  Recipient  arch
+  Terminates available-archetype(org, arch)
+  Holds when available-archetype(org, arch).
+
+Act authorize-request-type
+  Actor      org
+  Recipient  req
+  Related to rtype
+  Creates    allowed-request-type(org, req, rtype)
+  Holds when registered-with(org, req)
+         && request-type(rtype).
+
+Act revoke-request-type
+  Actor      org
+  Recipient  req
+  Related to rtype
+  Terminates allowed-request-type(org, req, rtype)
+  Holds when allowed-request-type(org, req, rtype).
+
+Act authorize-data-set
+  Actor      org
+  Recipient  req
+  Related to dataset
+  Creates    allowed-data-set(org, req, dataset)
+  Holds when registered-with(org, req)
+         && data-set(dataset).
+
+Act revoke-data-set
+  Actor      org
+  Recipient  req
+  Related to dataset
+  Terminates allowed-data-set(org, req, dataset)
+  Holds when allowed-data-set(org, req, dataset).
+
+Act authorize-archetype
+  Actor      org
+  Recipient  req
+  Related to arch
+  Creates    allowed-archetype(org, req, arch)
+  Holds when registered-with(org, req)
+         && archetype(arch)
+         && available-archetype(org, arch).
+
+Act revoke-archetype
+  Actor      org
+  Recipient  req
+  Related to arch
+  Terminates allowed-archetype(org, req, arch)
+  Holds when allowed-archetype(org, req, arch).
+
+Act authorize-compute-provider
+  Actor      org
+  Recipient  req
+  Related to provider
+  Creates    allowed-compute-provider(org, req, provider)
+  Holds when registered-with(org, req)
+         && compute-provider(provider)
+         && available-compute-provider(org, provider).
+
+Act revoke-compute-provider
+  Actor      org
+  Recipient  req
+  Related to provider
+  Terminates allowed-compute-provider(org, req, provider)
+  Holds when allowed-compute-provider(org, req, provider).
+
+// Operational act constrained by the agreement
+Act submit-request
+  Actor      req
+  Recipient  org
+  Related to rtype, dataset, arch, provider
+  Creates    request-submitted(org, req, rtype, dataset, arch, provider)
+  Holds when registered-with(org, req)
+         && allowed-request-type(org, req, rtype)
+         && allowed-data-set(org, req, dataset)
+         && allowed-archetype(org, req, arch)
+         && allowed-compute-provider(org, req, provider)
+         && available-compute-provider(org, provider)
+         && available-archetype(org, arch).
+
+// Convenience predicate to query if a specific tuple is allowed (introspection)
+Fact request-allowed Identified by org * req * rtype * dataset * arch * provider
+  Derived from request-allowed(org, req, rtype, dataset, arch, provider)
+          When Enabled(submit-request(req, org, rtype, dataset, arch, provider)).
+
+// ---------------------------------------------------------------------------
+// RUG Organization Definition
++organization("RUG").
+
+// Compute providers available to RUG
++compute-provider("SURF").
++compute-provider("otherCompany").
+
+// Archetypes available to RUG
++archetype("computeToData").
++archetype("dataThroughTtp").
++archetype("reproducableScience").
+
+// Request types
++request-type("sqlDataRequest").
++request-type("genericRequest").
+
+// Datasets
++data-set("wageGap").
+
+// Requesters
++requester("jorrit.stutterheim@cloudnation.nl").
+
+// Available providers and archetypes for RUG
+add-available-compute-provider("RUG", "SURF").
+
+add-available-archetype("RUG", "computeToData").
+add-available-archetype("RUG", "dataThroughTtp").
+
+// Relations (registered users with RUG)
+// Note: No users currently registered with RUG in the original agreements.json
+// Add users as needed using:
+// +registered-with("RUG", "user@example.com").
+
+// ---------------------------------------------------------------------------
+// Example: Register a new user and authorize them
+// +requester("new.user@example.com").
+// register-requester("RUG", "new.user@example.com").
+// authorize-request-type("RUG", "new.user@example.com", "sqlDataRequest").
+// authorize-data-set("RUG", "new.user@example.com", "wageGap").
+// authorize-archetype("RUG", "new.user@example.com", "computeToData").
+// authorize-compute-provider("RUG", "new.user@example.com", "SURF").
+// ---------------------------------------------------------------------------

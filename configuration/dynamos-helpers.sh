@@ -3,7 +3,8 @@
 ## DYNAMOS Configs
 
 # The directory where DYNAMOS repo is cloned
-export DYNAMOS_ROOT="${HOME}/DYNAMOS"
+export DYNAMOS_ROOT="${HOME}/projects/school/masterproject/DYNAMOS"
+
 # Helm chart location for the core chart (used in multiple deployments)
 export coreChart="${DYNAMOS_ROOT}/charts/core"
 

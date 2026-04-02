@@ -24,6 +24,8 @@ var (
 	receiveMutex      = &sync.Mutex{}
 	policyUpdateMutex = &sync.Mutex{}
 	policyUpdateMap   = make(map[string]map[string]*pb.CompositionRequest)
+	agreementUpdateMutex = &sync.Mutex{}
+	agreementUpdateMap   = make(map[string]chan *pb.PolicyUpdate)
 	c                 pb.RabbitMQClient
 )
 

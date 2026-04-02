@@ -1,0 +1,306 @@
+openapi: 3.0.3
+info:
+  title: DYNAMOS API Gateway
+  description: |
+    Public-facing API Gateway for the DYNAMOS system.
+    
+    The API Gateway is the single entry point for external clients (e.g. the web
+    frontend). It proxies data-request workflows to the internal orchestration
+    layer and exposes real-time communication via Socket.IO.
+    
+    ## Data Request Flow
+    ```
+    ┌──────────┐   POST /requestApproval   ┌─────────────┐
+    │  Client  │ ──────────────────────────▶│ API Gateway  │
+    └──────────┘                            └──────┬──────┘
+                                                   │ gRPC / RabbitMQ
+                                                   ▼
+                                          ┌─────────────────┐
+                                          │  Policy Enforcer │
+                                          │  (via sidecar)   │
+                                          └────────┬────────┘
+                                                   │ approval
+                                                   ▼
+                                          ┌─────────────────┐
+                                          │   Data Steward   │
+                                          │     Agents       │
+                                          └─────────────────┘
+    ```
+    
+    ## Available Providers
+    Returns a list of all data steward agents currently registered and online
+    in the DYNAMOS cluster via etcd.
+    
+    ## Real-Time Communication
+    Socket.IO endpoint for streaming results and status updates back to the
+    frontend in real time.
+  version: 1.0.0
+  contact:
+    name: Niels Arts
+
+servers:
+  - url: http://api-gateway.api-gateway.svc.cluster.local:80
+    description: In-cluster production server
+paths:
+  # ---------------------------------------------------------------------------
+  # Data Request Endpoints
+  # ---------------------------------------------------------------------------
+  /api/v1/requestApproval:
+    post:
+      summary: Submit a data request for approval
+      description: |
+        Submits a data request to the DYNAMOS system for policy validation and
+        execution.
+        
+        **Flow:**
+        1. The gateway forwards the request to the Policy Enforcer via the
+           sidecar (gRPC → RabbitMQ).
+        2. The Policy Enforcer validates the request against the active
+           agreements and returns an approval/denial together with the list
+           of authorised data providers.
+        3. On approval the gateway sends the data request to each authorised
+           provider agent and collects the responses.
+        4. The aggregated responses are returned to the caller.
+        
+        The call blocks until all provider responses are collected or the
+        30-second timeout is reached.
+      operationId: requestApproval
+      tags:
+        - Data Requests
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RequestApproval'
+            examples:
+              sql_data_request:
+                summary: SQL data request for wage gap data
+                value:
+                  type: "sqlDataRequest"
+                  user:
+                    ID: "user-001"
+                    userName: "jorrit.stutterheim@cloudnation.nl"
+                  dataProviders:
+                    - "UVA"
+                    - "VU"
+                  data_request:
+                    type: "sqlDataRequest"
+                    query: "SELECT * FROM Personen p JOIN Aanstellingen s LIMIT 1000"
+                    algorithm: "average"
+                    options:
+                      graph: true
+                      aggregate: true
+      responses:
+        '200':
+          description: |
+            Request approved and data collected from authorised providers.
+            The response contains the job ID and an array of raw provider
+            responses (each is JSON-encoded as a string).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RequestApprovalResult'
+              example:
+                jobId: "jorrit-stutterheim-7e2d9c4c"
+                responses:
+                  - '{"columns":["age","wage"],"rows":[[25,3000],[30,3500]]}'
+        '400':
+          description: Bad request – invalid or missing body
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '408':
+          description: Request timed out waiting for provider responses
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: "Request timed out"
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # ---------------------------------------------------------------------------
+  # Provider Discovery Endpoints
+  # ---------------------------------------------------------------------------
+  /api/v1/getAvailableProviders:
+    get:
+      summary: List all online data steward agents
+      description: |
+        Queries etcd for all agents currently registered under
+        `/agents/online` and returns their details.
+        
+        This endpoint is typically called by the frontend to populate the
+        list of selectable data providers before the user submits a request.
+      operationId: getAvailableProviders
+      tags:
+        - Providers
+      responses:
+        '200':
+          description: Map of online agent names to their details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AvailableProvidersResponse'
+              example:
+                UVA:
+                  name: "UVA"
+                  routingKey: "UVA-in"
+                  dns: "agent-uva.agents.svc.cluster.local"
+                VU:
+                  name: "VU"
+                  routingKey: "VU-in"
+                  dns: "agent-vu.agents.svc.cluster.local"
+                SURF:
+                  name: "SURF"
+                  routingKey: "SURF-in"
+                  dns: "agent-surf.agents.svc.cluster.local"
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # ---------------------------------------------------------------------------
+  # Real-Time Communication
+  # ---------------------------------------------------------------------------
+  /api/v1/socket.io/:
+    get:
+      summary: Socket.IO endpoint
+      description: |
+        Socket.IO endpoint used by the frontend for real-time bidirectional
+        communication (status updates and streaming results).
+        
+        > **Note:** This is a WebSocket upgrade endpoint. Standard HTTP GET
+        > requests will receive the Socket.IO handshake response. Use a
+        > Socket.IO client library to connect.
+      operationId: socketIO
+      tags:
+        - Real-Time
+      responses:
+        '200':
+          description: Socket.IO handshake response
+          content:
+            application/json:
+              schema:
+                type: object
+                description: Socket.IO handshake payload
+
+# -----------------------------------------------------------------------------
+# Components
+# -----------------------------------------------------------------------------
+components:
+  # ---------------------------------------------------------------------------
+  # Schemas
+  # ---------------------------------------------------------------------------
+  schemas:
+    # -------------------------------------------------------------------------
+    # Data Request Schemas
+    # -------------------------------------------------------------------------
+    User:
+      type: object
+      properties:
+        ID:
+          type: string
+          description: Unique user identifier
+          example: "user-001"
+        userName:
+          type: string
+          description: User's email or username
+          example: "jorrit.stutterheim@cloudnation.nl"
+
+    RequestApproval:
+      type: object
+      required:
+        - type
+        - user
+        - dataProviders
+        - data_request
+      properties:
+        type:
+          type: string
+          description: The type of data request (e.g. `sqlDataRequest`)
+          example: "sqlDataRequest"
+        user:
+          $ref: '#/components/schemas/User'
+        dataProviders:
+          type: array
+          items:
+            type: string
+          description: List of data steward names to request data from
+          example: ["UVA", "VU"]
+        data_request:
+          type: object
+          description: |
+            The data request payload. Structure varies by type.
+            For `sqlDataRequest` contains `query`, `algorithm`, `options`, etc.
+          additionalProperties: true
+          example:
+            type: "sqlDataRequest"
+            query: "SELECT * FROM wageGap"
+            options:
+              aggregate: true
+
+    RequestApprovalResult:
+      type: object
+      properties:
+        jobId:
+          type: string
+          description: Unique identifier for the processing job
+          example: "jorrit-stutterheim-7e2d9c4c"
+        responses:
+          type: array
+          items:
+            type: string
+          description: |
+            Raw JSON-encoded responses from each authorised provider.
+            Each element is a string containing the provider's JSON response.
+          example:
+            - '{"columns":["age","wage"],"rows":[[25,3000],[30,3500]]}'
+
+    # -------------------------------------------------------------------------
+    # Provider Schemas
+    # -------------------------------------------------------------------------
+    AgentDetails:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Agent / data steward name
+          example: "UVA"
+        routingKey:
+          type: string
+          description: RabbitMQ routing key for messaging
+          example: "UVA-in"
+        dns:
+          type: string
+          description: In-cluster DNS name of the agent pod
+          example: "agent-uva.agents.svc.cluster.local"
+
+    AvailableProvidersResponse:
+      type: object
+      additionalProperties:
+        $ref: '#/components/schemas/AgentDetails'
+      description: Map of agent names to their details
+      example:
+        UVA:
+          name: "UVA"
+          routingKey: "UVA-in"
+          dns: "agent-uva.agents.svc.cluster.local"
+
+    # -------------------------------------------------------------------------
+    # Common Schemas
+    # -------------------------------------------------------------------------
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+          description: Error message
+          example: "Internal server error"

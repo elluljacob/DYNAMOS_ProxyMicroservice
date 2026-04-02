@@ -63,7 +63,6 @@ spec:
       containers:
         - name: testAgent
           image: {{ .Values.dockerArtifactAccount }}/agent:{{ .Values.branchNameTag }}
-          imagePullPolicy: Always
           ports:
             - containerPort: 8080
           env:
@@ -78,7 +77,6 @@ spec:
           #     memory: "256Mi"
         - name: sidecar
           image: {{ .Values.dockerArtifactAccount }}/sidecar:{{ .Values.branchNameTag }}
-          imagePullPolicy: Always
           env:
             - name: AMQ_PASSWORD
               valueFrom:

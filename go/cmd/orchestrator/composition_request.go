@@ -20,6 +20,14 @@ func (e *UnauthorizedProviderError) Error() string {
 	return fmt.Sprintf("third party '%s' is not online", e.ProviderName)
 }
 
+// archetypesForLog returns the archetypes slice for logging; nil-safe.
+func archetypesForLog(a *pb.UserAllowedArchetypes) []string {
+	if a == nil {
+		return nil
+	}
+	return a.Archetypes
+}
+
 func startCompositionRequest(ctx context.Context, validationResponse *pb.ValidationResponse, authorizedProviders map[string]lib.AgentDetails, compositionRequest *pb.CompositionRequest) (map[string]string, context.Context, error) {
 	logger.Debug("Entering startCompositionRequest")
 
@@ -138,9 +146,10 @@ func getArchetypeBasedOnOptions(validationResponse *pb.ValidationResponse, autho
 			if value {
 				allowed := true
 				// Check if all authorized data providers allow the archetype
-				for provider, _ := range authorizedDataProviders {
-					if !slices.Contains(validationResponse.ValidArchetypes.Archetypes[provider].Archetypes, "dataThroughTtp") {
-						logger.Sugar().Debugf("allowed false, slice: %v", validationResponse.ValidArchetypes.Archetypes[provider].Archetypes)
+				for provider := range authorizedDataProviders {
+					allowedArchetypes := validationResponse.ValidArchetypes.Archetypes[provider]
+					if allowedArchetypes == nil || !slices.Contains(allowedArchetypes.Archetypes, "dataThroughTtp") {
+						logger.Sugar().Debugf("allowed false for provider %s, slice: %v", provider, archetypesForLog(allowedArchetypes))
 						// Set allowed to false if any provider does not allow the archetype
 						allowed = false
 						// Break out of the loop if one provider does not allow it to avoid unnecessary checks
@@ -152,15 +161,16 @@ func getArchetypeBasedOnOptions(validationResponse *pb.ValidationResponse, autho
 					return "dataThroughTtp"
 				}
 			} else if len(authorizedDataProviders) > 1 { // aggregate is false here as the previous condition (is true) is not met
-			// If aggregate is not enabled and multiple data providers are used, enforce the 'computeToData' archetype
-			// This is because without the aggregate option, the 'dataThroughTtp' would only use the data of one data provider, which 
-			// does not make sense. Also, this is the counterpart of the above option that enables the 'dataThroughTtp' archetype when aggregate is true.
-				
-				// Check if all authorized data providers allow the archetype				
+				// If aggregate is not enabled and multiple data providers are used, enforce the 'computeToData' archetype
+				// This is because without the aggregate option, the 'dataThroughTtp' would only use the data of one data provider, which
+				// does not make sense. Also, this is the counterpart of the above option that enables the 'dataThroughTtp' archetype when aggregate is true.
+
+				// Check if all authorized data providers allow the archetype
 				allowed := true
 				for provider := range authorizedDataProviders {
-					if !slices.Contains(validationResponse.ValidArchetypes.Archetypes[provider].Archetypes, "computeToData") {
-						logger.Sugar().Debugf("computeToData not allowed for provider %v: %v", provider, validationResponse.ValidArchetypes.Archetypes[provider].Archetypes)
+					allowedArchetypes := validationResponse.ValidArchetypes.Archetypes[provider]
+					if allowedArchetypes == nil || !slices.Contains(allowedArchetypes.Archetypes, "computeToData") {
+						logger.Sugar().Debugf("computeToData not allowed for provider %v: %v", provider, archetypesForLog(allowedArchetypes))
 						// Set allowed to false if any provider does not allow the archetype
 						allowed = false
 						// Break out of the loop if one provider does not allow it to avoid unnecessary checks
@@ -182,13 +192,16 @@ func getArchetypeBasedOnOptions(validationResponse *pb.ValidationResponse, autho
 // TODO: Make smarter
 func chooseArchetype(validationResponse *pb.ValidationResponse, authorizedDataProviders map[string]lib.AgentDetails) (string, error) {
 	logger.Sugar().Debug("starting chooseArchetype")
+	if validationResponse.ValidArchetypes == nil || len(validationResponse.ValidArchetypes.Archetypes) == 0 {
+		return "", fmt.Errorf("validation response has no valid archetypes")
+	}
 	logger.Sugar().Debugf("length options: %v", len(validationResponse.Options))
 
-	for k, _ := range validationResponse.ValidDataproviders {
+	for k := range validationResponse.ValidDataproviders {
 		logger.Sugar().Debug("validDataprovider: %s ", k)
 	}
 
-	if validationResponse.Options != nil && len(validationResponse.Options) > 0 {
+	if len(validationResponse.Options) > 0 {
 		archetype := getArchetypeBasedOnOptions(validationResponse, authorizedDataProviders)
 		if archetype != "" {
 			return archetype, nil
@@ -202,7 +215,8 @@ func chooseArchetype(validationResponse *pb.ValidationResponse, authorizedDataPr
 	}
 	allowed := true
 	for provider := range authorizedDataProviders {
-		if !slices.Contains(validationResponse.ValidArchetypes.Archetypes[provider].Archetypes, archeType.Name) {
+		allowedArchetypes := validationResponse.ValidArchetypes.Archetypes[provider]
+		if allowedArchetypes == nil || !slices.Contains(allowedArchetypes.Archetypes, archeType.Name) {
 			allowed = false
 		}
 	}
@@ -211,7 +225,11 @@ func chooseArchetype(validationResponse *pb.ValidationResponse, authorizedDataPr
 	}
 
 	for provider := range authorizedDataProviders {
-		someArchetype := validationResponse.ValidArchetypes.Archetypes[provider].Archetypes[0]
+		allowedArchetypes := validationResponse.ValidArchetypes.Archetypes[provider]
+		if allowedArchetypes == nil || len(allowedArchetypes.Archetypes) == 0 {
+			continue
+		}
+		someArchetype := allowedArchetypes.Archetypes[0]
 		if someArchetype != "" {
 			return someArchetype, nil
 		}

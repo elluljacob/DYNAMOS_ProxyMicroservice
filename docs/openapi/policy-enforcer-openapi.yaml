@@ -1,0 +1,1603 @@
+openapi: 3.0.3
+info:
+  title: DYNAMOS Policy Enforcer API
+  description: |
+    API for policy enforcement in the DYNAMOS system.
+    
+    This API provides two levels of abstraction:
+    
+    ## Policy Enforcer API (`/policy-enforcer/*`)
+    High-level, reasoner-agnostic interface for policy validation. This API is designed
+    to work with different reasoning engines (eFLINT, Symboleo, JSON-based, etc.) through
+    a common interface. Use these endpoints for:
+    - **Allowed Clauses**: Query all allowed request types, datasets, archetypes, and compute
+      providers for a specific requester at an organization in a single call
+    - **Request Validation**: Check if a specific data request is permitted by the policy
+    
+    ## eFLINT API (`/eflint/*`)
+    Low-level interface for direct eFLINT server management. Use these endpoints for:
+    - **Instance Management**: Start, stop, and monitor eFLINT server instances
+    - **Commands**: Send raw commands to the eFLINT server
+    - **State Management (POC)**: Export, import, and checkpoint eFLINT execution graphs
+    
+    ## Architecture
+    ```
+    ┌─────────────────────────────────────────────────────────────────────────┐
+    │                           HTTP/gRPC Layer                                │
+    ├─────────────────────────────────────────────────────────────────────────┤
+    │  Policy Enforcer API              │  eFLINT API                         │
+    │  /policy-enforcer/*               │  /eflint/*                          │
+    │  (Reasoner-agnostic)              │  (eFLINT-specific)                  │
+    └────────────────┬──────────────────┴───────────────────┬─────────────────┘
+                     │                                       │
+                     ▼                                       │
+    ┌─────────────────────────────────┐                      │
+    │      Reasoner Interface         │                      │
+    │  - eFLINT Reasoner              │                      │
+    │  - (Future: Symboleo, JSON)     │◄─────────────────────┘
+    └────────────────┬────────────────┘
+                     │
+                     ▼
+    ┌─────────────────────────────────┐
+    │        eFLINT Manager           │
+    │   (Process lifecycle, TCP)      │
+    └────────────────┬────────────────┘
+                     │
+                     ▼ TCP
+    ┌─────────────────────────────────┐
+    │       eFLINT Server             │
+    │    (external process)           │
+    └─────────────────────────────────┘
+    ```
+  version: 2.0.0
+  contact:
+    name: Niels Arts
+
+servers:
+  - url: http://policy-enforcer.orchestrator.svc.cluster.local:80
+    description: In-cluster production server
+paths:
+  # ---------------------------------------------------------------------------
+  # Instance Management Endpoints
+  # ---------------------------------------------------------------------------
+  /api/v1/eflint/status:
+    get:
+      summary: Get instance status
+      description: |
+        Returns the current status of the eFLINT server instance.
+        If instance_id is provided, returns the status of that specific pool instance.
+      operationId: getStatus
+      tags:
+        - Instance Management
+      parameters:
+        - $ref: '#/components/parameters/InstanceIdParam'
+      responses:
+        '200':
+          description: Status retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResponse'
+        '404':
+          description: Instance not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/eflint/start:
+    post:
+      summary: Start instance
+      description: |
+        Starts the eFLINT server instance with the given model.
+        
+        If an instance is already running:
+        - With `force=false` (default): Returns 409 Conflict
+        - With `force=true`: Stops the existing instance and starts a new one
+      operationId: startInstance
+      tags:
+        - Instance Management
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StartRequest'
+            examples:
+              simple:
+                summary: Start with model
+                value:
+                  model_location: "/path/to/model.eflint"
+              force:
+                summary: Force restart with new model
+                value:
+                  model_location: "/path/to/model.eflint"
+                  force: true
+      responses:
+        '200':
+          description: Instance started successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResponse'
+        '400':
+          description: Bad request - model_location is required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Instance already running (use force=true to restart)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/eflint/stop:
+    post:
+      summary: Stop instance
+      description: |
+        Stops a running eFLINT pool instance identified by instance_id.
+      operationId: stopInstance
+      tags:
+        - Instance Management
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InstanceRequest'
+      responses:
+        '200':
+          description: Instance stopped successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResponse'
+        '400':
+          description: Bad request - invalid body or missing instance_id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Instance not found in pool
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Instance pool not configured
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/eflint/command:
+    post:
+      summary: Send command
+      description: |
+        Sends a command to an eFLINT pool instance identified by instance_id.
+        
+        The `command` field accepts two formats:
+        - **Object format** (recommended): Pass the command as a JSON object directly. No escaping needed.
+        - **String format** (legacy): Pass the command as an escaped JSON string.
+        
+        Using the object format avoids the need to escape double quotes in eFLINT phrases.
+      operationId: sendCommand
+      tags:
+        - Instance Management
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CommandRequest'
+            examples:
+              # ---------------------------------------------------------------------------
+              # Command type: facts, status, create-export
+              # ---------------------------------------------------------------------------
+              facts:
+                summary: Get facts
+                description: Returns the current facts from the eFLINT state.
+                value:
+                  instance_id: "instance-0"
+                  command:
+                    command: facts
+              status:
+                summary: Get eFLINT status
+                value:
+                  instance_id: "instance-0"
+                  command:
+                    command: status
+              create_export:
+                summary: Create export
+                value:
+                  instance_id: "instance-0"
+                  command:
+                    command: create-export
+              # ---------------------------------------------------------------------------
+              # Command type: phrase (object and string format)
+              # ---------------------------------------------------------------------------
+              phrase_object:
+                summary: Execute a phrase (object format - recommended)
+                description: |
+                  With object format, quotes in the eFLINT text are just regular JSON string quotes.
+                  No double-escaping needed.
+                value:
+                  instance_id: "instance-0"
+                  command:
+                    command: phrase
+                    text: '+example-fact("value").'
+              phrase_string:
+                summary: Execute a phrase (string format - legacy)
+                description: |
+                  With string format, you need to escape the outer JSON string AND the inner JSON,
+                  leading to double-escaped quotes (\\\" instead of just \").
+                value:
+                  instance_id: "instance-0"
+                  command: '{"command": "phrase", "text": "+example-fact(\\\"value\\\")."}'
+              # ---------------------------------------------------------------------------
+              # Command type: enabled
+              # ---------------------------------------------------------------------------
+              enabled_object:
+                summary: Query if action is enabled (object format)
+                value:
+                  instance_id: "instance-0"
+                  command:
+                    command: enabled
+                    value:
+                      tagged-type: Act
+                      fact-type: submit-request
+                      value:
+                        - tagged-type: String
+                          fact-type: requester
+                          value: jorrit.stutterheim@cloudnation.nl
+                          textual: "\"jorrit.stutterheim@cloudnation.nl\""
+                        - tagged-type: String
+                          fact-type: organization
+                          value: VU
+                          textual: "\"VU\""
+                        - tagged-type: String
+                          fact-type: request-type
+                          value: sqlDataRequest
+                          textual: "\"sqlDataRequest\""
+                        - tagged-type: String
+                          fact-type: data-set
+                          value: wageGap
+                          textual: "\"wageGap\""
+                        - tagged-type: String
+                          fact-type: archetype
+                          value: computeToData
+                          textual: "\"computeToData\""
+                        - tagged-type: String
+                          fact-type: compute-provider
+                          value: SURF
+                          textual: "\"SURF\""
+                      textual: "submit-request(\"jorrit.stutterheim@cloudnation.nl\", \"VU\", \"sqlDataRequest\", \"wageGap\", \"computeToData\", \"SURF\")"
+              # ---------------------------------------------------------------------------
+              # Action: authorize-request-type (structured, value, phrase)
+              # ---------------------------------------------------------------------------
+              action_authorize_request_type_structured:
+                summary: Action authorize-request-type (structured form)
+                value:
+                  instance_id: "instance-0"
+                  command:
+                    command: action
+                    act-type: authorize-request-type
+                    actor: VU
+                    recipient: jorrit.stutterheim@cloudnation.nl
+                    objects: ["sqlDataRequest"]
+              action_authorize_request_type_value:
+                summary: Action authorize-request-type (value form)
+                value:
+                  instance_id: "instance-0"
+                  command:
+                    command: action
+                    value:
+                      fact-type: authorize-request-type
+                      arguments:
+                        - fact-type: org
+                          value: VU
+                        - fact-type: req
+                          value: jorrit.stutterheim@cloudnation.nl
+                        - fact-type: rtype
+                          value: sqlDataRequest
+              action_authorize_request_type_phrase:
+                summary: Action authorize-request-type (phrase command)
+                value:
+                  instance_id: "instance-0"
+                  command:
+                    command: phrase
+                    text: 'authorize-request-type("VU", "jorrit.stutterheim@cloudnation.nl", "sqlDataRequest").'
+              # ---------------------------------------------------------------------------
+              # Action: revoke-request-type (structured, value, phrase)
+              # ---------------------------------------------------------------------------
+              action_revoke_request_type_structured:
+                summary: Action revoke-request-type (structured form)
+                value:
+                  instance_id: "instance-0"
+                  command:
+                    command: action
+                    act-type: revoke-request-type
+                    actor: VU
+                    recipient: jorrit.stutterheim@cloudnation.nl
+                    objects: ["sqlDataRequest"]
+              action_revoke_request_type_value:
+                summary: Action revoke-request-type (value form)
+                value:
+                  instance_id: "instance-0"
+                  command:
+                    command: action
+                    value:
+                      fact-type: revoke-request-type
+                      arguments:
+                        - fact-type: org
+                          value: VU
+                        - fact-type: req
+                          value: jorrit.stutterheim@cloudnation.nl
+                        - fact-type: rtype
+                          value: sqlDataRequest
+              action_revoke_request_type_phrase:
+                summary: Action revoke-request-type (phrase command)
+                value:
+                  instance_id: "instance-0"
+                  command:
+                    command: phrase
+                    text: 'revoke-request-type("VU", "jorrit.stutterheim@cloudnation.nl", "sqlDataRequest").'
+              # ---------------------------------------------------------------------------
+              # Action: authorize-data-set (structured, value, phrase)
+              # ---------------------------------------------------------------------------
+              action_authorize_data_set_structured:
+                summary: Action authorize-data-set (structured form)
+                value:
+                  instance_id: "instance-0"
+                  command:
+                    command: action
+                    act-type: authorize-data-set
+                    actor: VU
+                    recipient: jorrit.stutterheim@cloudnation.nl
+                    objects: ["wageGap"]
+              action_authorize_data_set_value:
+                summary: Action authorize-data-set (value form)
+                value:
+                  instance_id: "instance-0"
+                  command:
+                    command: action
+                    value:
+                      fact-type: authorize-data-set
+                      arguments:
+                        - fact-type: org
+                          value: VU
+                        - fact-type: req
+                          value: jorrit.stutterheim@cloudnation.nl
+                        - fact-type: dataset
+                          value: wageGap
+              action_authorize_data_set_phrase:
+                summary: Action authorize-data-set (phrase command)
+                value:
+                  instance_id: "instance-0"
+                  command:
+                    command: phrase
+                    text: 'authorize-data-set("VU", "jorrit.stutterheim@cloudnation.nl", "wageGap").'
+              # ---------------------------------------------------------------------------
+              # Action: revoke-data-set (structured, value, phrase)
+              # ---------------------------------------------------------------------------
+              action_revoke_data_set_structured:
+                summary: Action revoke-data-set (structured form)
+                value:
+                  instance_id: "instance-0"
+                  command:
+                    command: action
+                    act-type: revoke-data-set
+                    actor: VU
+                    recipient: jorrit.stutterheim@cloudnation.nl
+                    objects: ["wageGap"]
+              action_revoke_data_set_value:
+                summary: Action revoke-data-set (value form)
+                value:
+                  instance_id: "instance-0"
+                  command:
+                    command: action
+                    value:
+                      fact-type: revoke-data-set
+                      arguments:
+                        - fact-type: org
+                          value: VU
+                        - fact-type: req
+                          value: jorrit.stutterheim@cloudnation.nl
+                        - fact-type: dataset
+                          value: wageGap
+              action_revoke_data_set_phrase:
+                summary: Action revoke-data-set (phrase command)
+                value:
+                  instance_id: "instance-0"
+                  command:
+                    command: phrase
+                    text: 'revoke-data-set("VU", "jorrit.stutterheim@cloudnation.nl", "wageGap").'
+              # ---------------------------------------------------------------------------
+              # Action: authorize-archetype (structured, value, phrase)
+              # ---------------------------------------------------------------------------
+              action_authorize_archetype_structured:
+                summary: Action authorize-archetype (structured form)
+                value:
+                  instance_id: "instance-0"
+                  command:
+                    command: action
+                    act-type: authorize-archetype
+                    actor: VU
+                    recipient: jorrit.stutterheim@cloudnation.nl
+                    objects: ["computeToData"]
+              action_authorize_archetype_value:
+                summary: Action authorize-archetype (value form)
+                value:
+                  instance_id: "instance-0"
+                  command:
+                    command: action
+                    value:
+                      fact-type: authorize-archetype
+                      arguments:
+                        - fact-type: org
+                          value: VU
+                        - fact-type: req
+                          value: jorrit.stutterheim@cloudnation.nl
+                        - fact-type: arch
+                          value: computeToData
+              action_authorize_archetype_phrase:
+                summary: Action authorize-archetype (phrase command)
+                value:
+                  instance_id: "instance-0"
+                  command:
+                    command: phrase
+                    text: 'authorize-archetype("VU", "jorrit.stutterheim@cloudnation.nl", "computeToData").'
+              # ---------------------------------------------------------------------------
+              # Action: revoke-archetype (structured, value, phrase)
+              # ---------------------------------------------------------------------------
+              action_revoke_archetype_structured:
+                summary: Action revoke-archetype (structured form)
+                value:
+                  instance_id: "instance-0"
+                  command:
+                    command: action
+                    act-type: revoke-archetype
+                    actor: VU
+                    recipient: jorrit.stutterheim@cloudnation.nl
+                    objects: ["computeToData"]
+              action_revoke_archetype_value:
+                summary: Action revoke-archetype (value form)
+                value:
+                  instance_id: "instance-0"
+                  command:
+                    command: action
+                    value:
+                      fact-type: revoke-archetype
+                      arguments:
+                        - fact-type: org
+                          value: VU
+                        - fact-type: req
+                          value: jorrit.stutterheim@cloudnation.nl
+                        - fact-type: arch
+                          value: computeToData
+              action_revoke_archetype_phrase:
+                summary: Action revoke-archetype (phrase command)
+                value:
+                  instance_id: "instance-0"
+                  command:
+                    command: phrase
+                    text: 'revoke-archetype("VU", "jorrit.stutterheim@cloudnation.nl", "computeToData").'
+              # ---------------------------------------------------------------------------
+              # Action: authorize-compute-provider (structured, value, phrase)
+              # ---------------------------------------------------------------------------
+              action_authorize_compute_provider_structured:
+                summary: Action authorize-compute-provider (structured form)
+                value:
+                  instance_id: "instance-0"
+                  command:
+                    command: action
+                    act-type: authorize-compute-provider
+                    actor: VU
+                    recipient: jorrit.stutterheim@cloudnation.nl
+                    objects: ["SURF"]
+              action_authorize_compute_provider_value:
+                summary: Action authorize-compute-provider (value form)
+                value:
+                  instance_id: "instance-0"
+                  command:
+                    command: action
+                    value:
+                      fact-type: authorize-compute-provider
+                      arguments:
+                        - fact-type: org
+                          value: VU
+                        - fact-type: req
+                          value: jorrit.stutterheim@cloudnation.nl
+                        - fact-type: provider
+                          value: SURF
+              action_authorize_compute_provider_phrase:
+                summary: Action authorize-compute-provider (phrase command)
+                value:
+                  instance_id: "instance-0"
+                  command:
+                    command: phrase
+                    text: 'authorize-compute-provider("VU", "jorrit.stutterheim@cloudnation.nl", "SURF").'
+              # ---------------------------------------------------------------------------
+              # Action: revoke-compute-provider (structured, value, phrase)
+              # ---------------------------------------------------------------------------
+              action_revoke_compute_provider_structured:
+                summary: Action revoke-compute-provider (structured form)
+                value:
+                  instance_id: "instance-0"
+                  command:
+                    command: action
+                    act-type: revoke-compute-provider
+                    actor: VU
+                    recipient: jorrit.stutterheim@cloudnation.nl
+                    objects: ["SURF"]
+              action_revoke_compute_provider_value:
+                summary: Action revoke-compute-provider (value form)
+                value:
+                  instance_id: "instance-0"
+                  command:
+                    command: action
+                    value:
+                      fact-type: revoke-compute-provider
+                      arguments:
+                        - fact-type: org
+                          value: VU
+                        - fact-type: req
+                          value: jorrit.stutterheim@cloudnation.nl
+                        - fact-type: provider
+                          value: SURF
+              action_revoke_compute_provider_phrase:
+                summary: Action revoke-compute-provider (phrase command)
+                value:
+                  instance_id: "instance-0"
+                  command:
+                    command: phrase
+                    text: 'revoke-compute-provider("VU", "jorrit.stutterheim@cloudnation.nl", "SURF").'
+              # ---------------------------------------------------------------------------
+              # Action: submit-request (structured, value, phrase)
+              # ---------------------------------------------------------------------------
+              action_submit_request_structured:
+                summary: Action submit-request (structured form)
+                description: submit-request has actor=requester, recipient=organization; objects are request-type, data-set, archetype, compute-provider.
+                value:
+                  instance_id: "instance-0"
+                  command:
+                    command: action
+                    act-type: submit-request
+                    actor: jorrit.stutterheim@cloudnation.nl
+                    recipient: VU
+                    objects:
+                      - sqlDataRequest
+                      - wageGap
+                      - computeToData
+                      - SURF
+              action_submit_request_value:
+                summary: Action submit-request (value form)
+                value:
+                  instance_id: "instance-0"
+                  command:
+                    command: action
+                    value:
+                      fact-type: submit-request
+                      arguments:
+                        - fact-type: req
+                          value: jorrit.stutterheim@cloudnation.nl
+                        - fact-type: org
+                          value: VU
+                        - fact-type: rtype
+                          value: sqlDataRequest
+                        - fact-type: dataset
+                          value: wageGap
+                        - fact-type: arch
+                          value: computeToData
+                        - fact-type: provider
+                          value: SURF
+              action_submit_request_phrase:
+                summary: Action submit-request (phrase command)
+                value:
+                  instance_id: "instance-0"
+                  command:
+                    command: phrase
+                    text: 'submit-request("jorrit.stutterheim@cloudnation.nl", "VU", "sqlDataRequest", "wageGap", "computeToData", "SURF").'
+      responses:
+        '200':
+          description: Command executed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommandResponse'
+
+  /api/v1/eflint/restart:
+    post:
+      summary: Restart instance
+      description: |
+        Restarts an eFLINT pool instance identified by instance_id with the same model.
+      operationId: restartInstance
+      tags:
+        - Instance Management
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InstanceRequest'
+      responses:
+        '200':
+          description: Instance restarted successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResponse'
+        '400':
+          description: Bad request - invalid body or missing instance_id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Instance not found in pool
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Instance pool not configured
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # ---------------------------------------------------------------------------
+  # Pool Management Endpoints
+  # ---------------------------------------------------------------------------
+  /api/v1/eflint/instances:
+    get:
+      summary: List all pool instances
+      description: |
+        Returns a list of all eFLINT server instances in the pool with their current status.
+        Each instance has a stable ID, a status (idle, in_use, unhealthy), and connection details.
+      operationId: listInstances
+      tags:
+        - Pool Management
+      responses:
+        '200':
+          description: Instances listed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InstanceListResponse'
+        '503':
+          description: Instance pool not configured
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/eflint/instances/pool-size:
+    get:
+      summary: Get pool size
+      description: Returns the current target pool size and actual instance counts.
+      operationId: getPoolSize
+      tags:
+        - Pool Management
+      responses:
+        '200':
+          description: Pool size retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PoolSizeResponse'
+        '503':
+          description: Instance pool not configured
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    put:
+      summary: Set pool size
+      description: |
+        Adjusts the target pool size at runtime.
+        New instances spin up asynchronously via the health monitor.
+        Excess idle instances are gracefully stopped.
+      operationId: setPoolSize
+      tags:
+        - Pool Management
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PoolSizeRequest'
+            example:
+              target_size: 5
+      responses:
+        '200':
+          description: Pool size updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PoolSizeResponse'
+        '400':
+          description: Bad request - target_size must be at least 1
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Instance pool not configured
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # ---------------------------------------------------------------------------
+  # State Management Endpoints (POC)
+  # ---------------------------------------------------------------------------
+  /api/v1/eflint/state:
+    get:
+      summary: Get current state
+      description: |
+        Retrieves the current execution graph state of the eFLINT instance.
+        If instance_id is provided, returns the state of that specific pool instance.
+      operationId: getState
+      tags:
+        - State Management
+      parameters:
+        - $ref: '#/components/parameters/InstanceIdParam'
+      responses:
+        '200':
+          description: State retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StateResponse'
+        '503':
+          description: Instance is not running
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/eflint/state/export:
+    post:
+      summary: Export state
+      description: |
+        Exports the current eFLINT execution graph state for later import.
+        Returns a SavedState object with metadata that can be stored and restored.
+      operationId: exportState
+      tags:
+        - State Management
+      responses:
+        '200':
+          description: State exported successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExportStateResponse'
+        '503':
+          description: Instance is not running
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/eflint/state/import:
+    post:
+      summary: Import state
+      description: |
+        Imports a previously exported eFLINT execution graph state.
+        
+        > **Note**: Due to limitations in the eFLINT server's load-export functionality,
+        > full state restoration may not work in all cases.
+      operationId: importState
+      tags:
+        - State Management
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImportStateRequest'
+      responses:
+        '200':
+          description: State imported successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          description: Bad request - state is required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Instance is not running
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/eflint/state/checkpoint:
+    post:
+      summary: Create checkpoint
+      description: Creates a named checkpoint of the current state that can be restored later
+      operationId: createCheckpoint
+      tags:
+        - State Management
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CheckpointRequest'
+            example:
+              name: "before-test"
+      responses:
+        '200':
+          description: Checkpoint created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CheckpointCreatedResponse'
+        '400':
+          description: Bad request - name is required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Instance is not running
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/eflint/state/checkpoint/restore:
+    post:
+      summary: Restore checkpoint
+      description: |
+        Restores a previously created checkpoint.
+        
+        > **Note**: Due to a bug in the eFLINT server, full state restoration may not work.
+        > In that case, the instance will be restarted to the initial model state.
+      operationId: restoreCheckpoint
+      tags:
+        - State Management
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CheckpointRequest'
+            example:
+              name: "before-test"
+      responses:
+        '200':
+          description: Checkpoint restored successfully (or partially with warning)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CheckpointRestoredResponse'
+        '400':
+          description: Bad request - name is required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Instance is not running
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/eflint/state/checkpoints:
+    get:
+      summary: List checkpoints
+      description: Lists all available checkpoints
+      operationId: listCheckpoints
+      tags:
+        - State Management
+      responses:
+        '200':
+          description: Checkpoints listed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CheckpointListResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/eflint/state/checkpoint/{name}:
+    delete:
+      summary: Delete checkpoint
+      description: Deletes a checkpoint by name
+      operationId: deleteCheckpoint
+      tags:
+        - State Management
+      parameters:
+        - name: name
+          in: path
+          required: true
+          description: The name of the checkpoint to delete
+          schema:
+            type: string
+          example: "before-test"
+      responses:
+        '200':
+          description: Checkpoint deleted successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CheckpointDeletedResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # ---------------------------------------------------------------------------
+  # Health Endpoints
+  # ---------------------------------------------------------------------------
+  /api/v1/health:
+    get:
+      summary: Health check
+      description: Returns the health status of the service
+      operationId: healthCheck
+      tags:
+        - Health
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "healthy"
+
+  # ---------------------------------------------------------------------------
+  # Policy Enforcer Endpoints (Reasoner-Agnostic)
+  # ---------------------------------------------------------------------------
+  /api/v1/policy-enforcer/allowed-clauses:
+    get:
+      summary: Get all allowed clauses
+      description: |
+        Returns all allowed clauses (request types, data sets, archetypes, and compute providers)
+        for a requester at an organization in a single request.
+        This is the primary endpoint for querying what a requester is allowed to do.
+      operationId: getAllAllowedClauses
+      tags:
+        - Policy Enforcer
+      parameters:
+        - $ref: '#/components/parameters/OrganizationParam'
+        - $ref: '#/components/parameters/RequesterParam'
+      responses:
+        '200':
+          description: All allowed clauses retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AllAllowedClausesResponse'
+        '400':
+          description: Bad request - missing required parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Reasoner is not running
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/policy-enforcer/validate:
+    post:
+      summary: Validate request
+      description: |
+        Validates whether a specific data request is allowed according to the policy.
+        
+        This endpoint checks all aspects of the request:
+        - Request type is allowed
+        - Data set is allowed
+        - Archetype is allowed
+        - Compute provider is allowed
+        - The combination is permitted by the agreement
+        
+        This is the main endpoint for policy enforcement in DYNAMOS.
+      operationId: validateRequest
+      tags:
+        - Policy Enforcer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ValidateRequestParams'
+            examples:
+              allowed_request:
+                summary: Request that should be allowed
+                value:
+                  organization: "VU"
+                  requester: "jorrit.stutterheim@cloudnation.nl"
+                  request_type: "sqlDataRequest"
+                  data_set: "wageGap"
+                  archetype: "dataThroughTtp"
+                  compute_provider: "SURF"
+              denied_request:
+                summary: Request that should be denied (computeToData was revoked)
+                value:
+                  organization: "VU"
+                  requester: "jorrit.stutterheim@cloudnation.nl"
+                  request_type: "sqlDataRequest"
+                  data_set: "wageGap"
+                  archetype: "computeToData"
+                  compute_provider: "SURF"
+      responses:
+        '200':
+          description: Validation completed (check 'allowed' field for result)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationResponse'
+        '400':
+          description: Bad request - missing required fields
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Reasoner is not running
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+# -----------------------------------------------------------------------------
+# Components
+# -----------------------------------------------------------------------------
+components:
+  # ---------------------------------------------------------------------------
+  # Reusable Parameters
+  # ---------------------------------------------------------------------------
+  parameters:
+    OrganizationParam:
+      name: organization
+      in: query
+      required: true
+      description: The organization/steward identifier
+      schema:
+        type: string
+      example: VU
+
+    RequesterParam:
+      name: requester
+      in: query
+      required: true
+      description: The requester/user identifier (typically an email)
+      schema:
+        type: string
+      example: jorrit.stutterheim@cloudnation.nl
+
+    InstanceIdParam:
+      name: instance_id
+      in: query
+      required: false
+      description: Optional pool instance ID to target. If omitted, the default instance is used.
+      schema:
+        type: string
+      example: "instance-0"
+
+  # ---------------------------------------------------------------------------
+  # Schemas
+  # ---------------------------------------------------------------------------
+  schemas:
+    # -------------------------------------------------------------------------
+    # Instance Management Schemas
+    # -------------------------------------------------------------------------
+    StatusResponse:
+      type: object
+      properties:
+        running:
+          type: boolean
+          description: Whether the instance is running
+          example: true
+        port:
+          type: integer
+          description: The port the instance is running on
+          example: 8123
+        model_location:
+          type: string
+          description: The path to the model file
+          example: "/path/to/model.eflint"
+
+    StartRequest:
+      type: object
+      required:
+        - model_location
+      properties:
+        model_location:
+          type: string
+          description: Path to the eFLINT model file
+          example: "/path/to/model.eflint"
+        force:
+          type: boolean
+          description: Force restart if an instance is already running
+          default: false
+          example: false
+
+    InstanceRequest:
+      type: object
+      required:
+        - instance_id
+      properties:
+        instance_id:
+          type: string
+          description: The pool instance ID to target
+          example: "instance-0"
+
+    CommandRequest:
+      type: object
+      required:
+        - command
+        - instance_id
+      properties:
+        command:
+          description: |
+            The command to send to the eFLINT server.
+            Can be either:
+            - A JSON object (recommended): Will be serialized before sending. Quotes in strings only need standard JSON escaping.
+            - A JSON string (legacy): Will be used directly. Requires double-escaping for quotes.
+          oneOf:
+            - type: object
+              description: Command as JSON object (recommended)
+              additionalProperties: true
+              example:
+                command: enabled
+                value:
+                  fact-type: submit-request
+                  value:
+                    - fact-type: req
+                      value: jorrit.stutterheim@cloudnation.nl
+                    - fact-type: org
+                      value: VU
+                    - fact-type: rtype
+                      value: sqlDataRequest
+                    - fact-type: dataset
+                      value: wageGap
+                    - fact-type: arch
+                      value: computeToData
+                    - fact-type: provider
+                      value: SURF
+            - type: string
+              description: Command as JSON string (legacy, requires double-escaping)
+              example: '{"command": "phrase", "text": "+example-fact(\\\"value\\\")."}'
+        instance_id:
+          type: string
+          description: The pool instance ID to target
+          example: "instance-0"
+
+    CommandResponse:
+      type: object
+      properties:
+        response:
+          type: object
+          description: The parsed JSON response from eFLINT
+
+    # -------------------------------------------------------------------------
+    # Pool Management Schemas
+    # -------------------------------------------------------------------------
+    InstanceInfo:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Stable identifier of the pool instance
+          example: "instance-0"
+        status:
+          type: string
+          enum: [idle, in_use, unhealthy]
+          description: Current pool status of the instance
+          example: "idle"
+        running:
+          type: boolean
+          description: Whether the underlying eFLINT server process is running
+          example: true
+        port:
+          type: integer
+          description: The TCP port the instance is listening on
+          example: 12345
+
+    InstanceListResponse:
+      type: object
+      properties:
+        instances:
+          type: array
+          items:
+            $ref: '#/components/schemas/InstanceInfo'
+          description: List of all pool instances
+        total:
+          type: integer
+          description: Total number of instances in the pool
+          example: 3
+        available:
+          type: integer
+          description: Number of idle instances available for use
+          example: 2
+
+    PoolSizeResponse:
+      type: object
+      properties:
+        target_size:
+          type: integer
+          description: The desired number of healthy instances
+          example: 3
+        total:
+          type: integer
+          description: Total instances in the registry
+          example: 3
+        idle:
+          type: integer
+          description: Number of idle instances
+          example: 2
+        in_use:
+          type: integer
+          description: Number of instances currently in use
+          example: 1
+        unhealthy:
+          type: integer
+          description: Number of unhealthy instances
+          example: 0
+
+    PoolSizeRequest:
+      type: object
+      required:
+        - target_size
+      properties:
+        target_size:
+          type: integer
+          minimum: 1
+          description: The new desired pool size
+          example: 5
+
+    # -------------------------------------------------------------------------
+    # Policy Enforcer Schemas
+    # -------------------------------------------------------------------------
+    AllAllowedClausesResponse:
+      type: object
+      properties:
+        organization:
+          type: string
+          description: The organization/steward identifier
+          example: VU
+        requester:
+          type: string
+          description: The requester/user identifier
+          example: jorrit.stutterheim@cloudnation.nl
+        request_types:
+          type: array
+          items:
+            type: string
+          description: List of allowed request types
+          example: ["sqlDataRequest", "genericRequest"]
+        data_sets:
+          type: array
+          items:
+            type: string
+          description: List of allowed datasets
+          example: ["wageGap"]
+        archetypes:
+          type: array
+          items:
+            type: string
+          description: List of allowed archetypes
+          example: ["dataThroughTtp", "reproducableScience"]
+        compute_providers:
+          type: array
+          items:
+            type: string
+          description: List of allowed compute providers
+          example: ["SURF"]
+
+    ValidateRequestParams:
+      type: object
+      required:
+        - organization
+        - requester
+        - request_type
+        - data_set
+        - archetype
+        - compute_provider
+      properties:
+        organization:
+          type: string
+          description: The data steward organization
+          example: "VU"
+        requester:
+          type: string
+          description: The user making the request
+          example: "jorrit.stutterheim@cloudnation.nl"
+        request_type:
+          type: string
+          description: Type of request
+          example: "sqlDataRequest"
+        data_set:
+          type: string
+          description: The dataset being requested
+          example: "wageGap"
+        archetype:
+          type: string
+          description: The processing archetype
+          example: "dataThroughTtp"
+        compute_provider:
+          type: string
+          description: Where the computation runs
+          example: "SURF"
+
+    ValidationResponse:
+      type: object
+      properties:
+        allowed:
+          type: boolean
+          description: Whether the request is permitted
+          example: true
+        reason:
+          type: string
+          description: Explanation for the decision
+          example: "Request is permitted by the agreement"
+        organization:
+          type: string
+          description: The organization checked
+          example: "VU"
+        requester:
+          type: string
+          description: The requester checked
+          example: "jorrit.stutterheim@cloudnation.nl"
+        request_type:
+          type: string
+          description: The request type checked
+          example: "sqlDataRequest"
+        data_set:
+          type: string
+          description: The dataset checked
+          example: "wageGap"
+        archetype:
+          type: string
+          description: The archetype checked
+          example: "dataThroughTtp"
+        compute_provider:
+          type: string
+          description: The compute provider checked
+          example: "SURF"
+
+    # -------------------------------------------------------------------------
+    # State Management Schemas
+    # -------------------------------------------------------------------------
+    StateResponse:
+      type: object
+      properties:
+        state:
+          type: object
+          description: The current execution graph state
+
+    SavedState:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Unique identifier for the saved state
+          example: "state-1704470400000000000"
+        model_location:
+          type: string
+          description: The model location when the state was saved
+          example: "/eflint/empty.eflint"
+        graph:
+          type: object
+          description: The eFLINT execution graph
+        saved_at:
+          type: string
+          format: date-time
+          description: When the state was saved
+          example: "2026-01-05T15:30:00Z"
+
+    ExportStateResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        state:
+          $ref: '#/components/schemas/SavedState'
+
+    ImportStateRequest:
+      type: object
+      required:
+        - state
+      properties:
+        state:
+          $ref: '#/components/schemas/SavedState'
+
+    CheckpointRequest:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          description: The name of the checkpoint
+          example: "before-test"
+
+    CheckpointCreatedResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        checkpoint:
+          type: string
+          description: The name of the created checkpoint
+          example: "before-test"
+        state_id:
+          type: string
+          description: The ID of the saved state
+          example: "state-1704470400000000000"
+        saved_at:
+          type: string
+          format: date-time
+          example: "2026-01-05T15:30:00Z"
+
+    CheckpointRestoredResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+          example: "checkpoint restored successfully"
+        restored:
+          type: string
+          description: The name of the restored checkpoint
+          example: "before-test"
+
+    CheckpointListResponse:
+      type: object
+      properties:
+        checkpoints:
+          type: array
+          items:
+            type: string
+          description: List of checkpoint names
+          example: ["before-test", "initial-state"]
+
+    CheckpointDeletedResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+          example: "checkpoint deleted successfully"
+        deleted:
+          type: string
+          description: The name of the deleted checkpoint
+          example: "before-test"
+
+    # -------------------------------------------------------------------------
+    # Common Schemas
+    # -------------------------------------------------------------------------
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+          description: Error message
+          example: "no instance running"
+
+    SuccessResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+          example: "operation completed successfully"
+
+# -----------------------------------------------------------------------------
+# Tags
+# -----------------------------------------------------------------------------
+tags:
+  - name: Policy Enforcer
+    description: |
+      Reasoner-agnostic policy enforcement endpoints. Use these for validating requests
+      and querying allowed clauses. Works with any configured reasoning engine (eFLINT,
+      Symboleo, JSON-based, etc.).
+  - name: Instance Management
+    description: |
+      Low-level endpoints for managing the eFLINT server instance lifecycle.
+      These are eFLINT-specific and should be used for debugging or direct server control.
+      Endpoints that accept an instance_id parameter can target specific pool instances.
+  - name: Pool Management
+    description: |
+      Endpoints for managing the eFLINT instance pool. The pool maintains a configurable
+      number of pre-started eFLINT server instances in an empty state for fast, stateless
+      validation. Use these endpoints to monitor pool health and dynamically scale the pool size.
+  - name: State Management
+    description: |
+      Endpoints for getting, exporting, importing, and managing eFLINT state checkpoints (POC).
+      These are eFLINT-specific and experimental.
+  - name: Health
+    description: Health check endpoints

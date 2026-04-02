@@ -44,6 +44,22 @@ func handleIncomingMessages(ctx context.Context, grpcMsg *pb.SideCarMessage) err
 		}
 		policyUpdateMutex.Unlock()
 
+	case "agreementUpdate":
+		agreementUpdate := &pb.PolicyUpdate{}
+		if err := grpcMsg.Body.UnmarshalTo(agreementUpdate); err != nil {
+			logger.Sugar().Errorf("Failed to unmarshal agreementUpdate: %v", err)
+			return err
+		}
+		agreementUpdateMutex.Lock()
+		resChan, ok := agreementUpdateMap[agreementUpdate.RequestMetadata.CorrelationId]
+		if ok {
+			delete(agreementUpdateMap, agreementUpdate.RequestMetadata.CorrelationId)
+			resChan <- agreementUpdate
+		} else {
+			logger.Sugar().Warn("no pending agreement update found for this correlation ID")
+		}
+		agreementUpdateMutex.Unlock()
+
 	default:
 		logger.Sugar().Errorf("Unknown message type: %s", grpcMsg.Type)
 		return fmt.Errorf("unknown message type: %s", grpcMsg.Type)

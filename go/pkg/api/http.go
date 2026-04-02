@@ -104,6 +104,24 @@ type OptionalServices struct {
 	Types       map[string][]string `json:"types"`
 }
 
+// ProviderValidationConfig specifies how to validate requests for a data provider.
+// This allows different organizations to use different validation strategies.
+type ProviderValidationConfig struct {
+	Name               string `json:"name"`               // Provider/organization name (e.g., "VU")
+	ValidationStrategy string `json:"validationStrategy"` // "legacy" or "eflint"
+	AgreementLocation  string `json:"agreementLocation"`  // For legacy: etcd key; for eflint: model file path
+}
+
+// EflintSavedState represents a saved eFLINT execution graph state.
+// It captures the complete state of an eFLINT instance at a point in time.
+// This is stored in etcd and loaded into the eFLINT server before reasoning.
+type EflintSavedState struct {
+	ID            string          `json:"id"`             // Unique identifier for this saved state
+	ModelLocation string          `json:"model_location"` // Path to the model when state was saved
+	Graph         json.RawMessage `json:"graph"`          // The eFLINT execution graph
+	SavedAt       time.Time       `json:"saved_at"`       // Timestamp when state was saved
+}
+
 type Named interface {
 	GetName() string
 }
@@ -123,6 +141,20 @@ func (a MicroserviceMetadata) GetName() string {
 func (a Agreement) GetName() string {
 	return a.Name
 }
+
+func (p ProviderValidationConfig) GetName() string {
+	return p.Name
+}
+
+func (e EflintSavedState) GetName() string {
+	return e.ID
+}
+
+// Validation strategy constants
+const (
+	ValidationStrategyLegacy = "legacy"
+	ValidationStrategyEflint = "eflint"
+)
 
 func GenericGetHandler[T any](w http.ResponseWriter, req *http.Request, etcdClient *clientv3.Client, etcdRoot string) {
 	trimmedPath := strings.TrimPrefix(req.URL.Path, etcdRoot) //fmt.Sprintf("%s/", etcdRoot))

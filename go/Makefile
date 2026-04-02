@@ -2,13 +2,18 @@
 SHELL := /bin/bash
 export PATH := $(PATH):$(HOME)/go/bin
 # Replace slashes in the current Git branch name with dashes (e.g., issue/123 -> issue-123)
-branch_name := $(shell git rev-parse --abbrev-ref HEAD | sed 's#/#-#g')
-# List of SQL-based microservices to build and push
+branch_name := $(shell git rev-parse --abbrev-ref HEAD | sed "s/\//-/g")# List of SQL-based microservices to build and push
 sql_microservices := sql-algorithm sql-anonymize sql-aggregate sql-test
 # List of DYNAMOS core services
-dynamos := sidecar policy-enforcer orchestrator agent api-gateway ext-provider # added ext-provider
+dynamos_core := sidecar orchestrator agent api-gateway
+dynamos := $(dynamos_core) policy-enforcer
 # Docker Hub account for tagging and pushing images
 dockerhub_account := jacobellul04
+# Platforms for multi-arch builds
+PLATFORMS ?= linux/amd64,linux/arm64
+# eFLINT source for policy-enforcer
+EFLINT_REPO ?= https://gitlab.com/eflint/haskell-implementation.git
+EFLINT_TAG ?= v4.1.0.1
 
 # Prepare Go project dependencies
 # Clean and verify Go module dependencies
@@ -57,16 +62,38 @@ define build_and_push
 			-t $(dockerhub_account)/$@:$(branch_name) \
 			-t $(dockerhub_account)/$@:latest \
 			./cmd/$@/)
-	
-	docker push $(dockerhub_account)/$@:$(branch_name)
-	docker push $(dockerhub_account)/$@:latest
 endef
 
 # Rule to build and push Docker images for each DYNAMOS service
 # Depends on 'prepare' and 'proto' steps
 # Use the defined build_and_push rule to build and push each service
-$(dynamos): prepare proto
+$(dynamos_core): prepare proto
 	$(call build_and_push)
+
+# policy-enforcer uses its own Dockerfile (with eflint-server build)
+policy-enforcer: prepare proto
+	cp go.mod go.sum ./cmd/policy-enforcer
+	cp -r pkg ./cmd/policy-enforcer
+	
+	(trap 'rm -f ./cmd/policy-enforcer/go.*; \
+			rm -rf ./cmd/policy-enforcer/pkg' EXIT; \
+		if [[ "$(PLATFORMS)" == *","* ]]; then \
+			(cd ./cmd/policy-enforcer && docker buildx build --platform $(PLATFORMS) --load \
+				--build-arg NAME='policy-enforcer' \
+				--build-arg EFLINT_REPO='$(EFLINT_REPO)' \
+				--build-arg EFLINT_TAG='$(EFLINT_TAG)' \
+				-t $(dockerhub_account)/policy-enforcer:$(branch_name) \
+				-t $(dockerhub_account)/policy-enforcer:latest \
+				-f Dockerfile .); \
+		else \
+			(cd ./cmd/policy-enforcer && docker buildx build --platform $(PLATFORMS) --load \
+				--build-arg NAME='policy-enforcer' \
+				--build-arg EFLINT_REPO='$(EFLINT_REPO)' \
+				--build-arg EFLINT_TAG='$(EFLINT_TAG)' \
+				-t $(dockerhub_account)/policy-enforcer:$(branch_name) \
+				-t $(dockerhub_account)/policy-enforcer:latest \
+				-f Dockerfile .); \
+		fi)
 
 # Same as above, but for the SQL-based microservices
 $(sql_microservices): prepare proto

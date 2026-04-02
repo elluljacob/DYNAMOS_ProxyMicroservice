@@ -1,0 +1,315 @@
+openapi: 3.0.3
+info:
+  title: DYNAMOS Agent API
+  description: |
+    API for data steward agents in the DYNAMOS system.
+    
+    Each data steward organisation (e.g. UVA, VU, SURF) runs its own agent
+    instance. The agent is responsible for:
+    - Receiving data requests from the API Gateway (or other agents)
+    - Deploying and managing microservice processing chains (jobs)
+    - Forwarding data to/from compute providers and other agents
+    
+    ## Authentication
+    All endpoints require a **Bearer token** in the `Authorization` header.
+    Token validation is currently a placeholder – any non-empty bearer token
+    is accepted.
+    
+    ## Architecture
+    ```
+    ┌─────────────────────────────────────────────────────────────────┐
+    │                        HTTP Layer                               │
+    │  POST /agent/v1/sqlDataRequest/{steward}                        │
+    │  (Bearer token required)                                        │
+    └──────────────────────────┬──────────────────────────────────────┘
+                               │
+                               ▼
+    ┌─────────────────────────────────────────────────────────────────┐
+    │                  Request Handler                                │
+    │  - Determines role (computeProvider / all)                      │
+    │  - Generates microservice chain                                 │
+    │  - Deploys Kubernetes job                                       │
+    └──────────────────────────┬──────────────────────────────────────┘
+                               │
+                  ┌────────────┴────────────┐
+                  ▼                         ▼
+    ┌──────────────────────┐  ┌──────────────────────┐
+    │  Sidecar (gRPC)      │  │  Kubernetes Jobs      │
+    │  RabbitMQ messaging  │  │  (sql-algorithm, etc) │
+    └──────────────────────┘  └──────────────────────┘
+    ```
+    
+    ## Data Request Types
+    The agent currently supports `sqlDataRequest`. The request is routed based
+    on the agent's role in the composition:
+    - **all**: The agent handles the entire pipeline locally (computeToData)
+    - **computeProvider**: The agent acts as compute provider and forwards data
+      requests to data-provider agents (dataThroughTtp)
+  version: 1.0.0
+  contact:
+    name: Niels Arts
+
+servers:
+  - url: http://{agent}.{agent}.svc.cluster.local:80
+    description: In-cluster agent server
+    variables:
+      agent:
+        default: steward
+        description: The agent variable should be defined at the time of the request itself as a parameter; it is the same as the already existing steward variable.
+paths:
+  # ---------------------------------------------------------------------------
+  # SQL Data Request Endpoint
+  # ---------------------------------------------------------------------------
+  /agent/v1/sqlDataRequest/{steward}:
+    post:
+      summary: Submit a SQL data request
+      description: |
+        Submits a SQL data request to this agent for processing.
+        
+        The `{steward}` path parameter must match the lowercase name of the
+        data steward this agent represents (e.g. `uva`, `vu`, `surf`).
+        
+        **Processing flow:**
+        1. The request body is unmarshalled as a protobuf `SqlDataRequest` (JSON encoding).
+        2. The agent looks up the matching composition request (job assignment)
+           from etcd using the user's name and job ID.
+        3. Based on the assigned role:
+           - **all** (computeToData): Generates a microservice chain, deploys
+             a Kubernetes job, and sends the request through the chain.
+           - **computeProvider** (dataThroughTtp): Forwards the data request
+             to all data-provider agents, deploys a local job for aggregation.
+        4. The agent waits for the processing result (up to 30 seconds).
+        5. The raw result bytes are returned to the caller.
+      operationId: sqlDataRequest
+      tags:
+        - SQL Data Requests
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: steward
+          in: path
+          required: true
+          description: |
+            Lowercase name of the data steward agent (must match the agent's
+            `DATA_STEWARD_NAME` environment variable, lowered).
+          schema:
+            type: string
+          examples:
+            uva:
+              summary: UVA data steward
+              value: "uva"
+            vu:
+              summary: VU data steward
+              value: "vu"
+            surf:
+              summary: SURF compute provider
+              value: "surf"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SqlDataRequest'
+            examples:
+              basic_query:
+                summary: Simple SQL query
+                value:
+                  type: "sqlDataRequest"
+                  query: "SELECT * FROM wageGap"
+                  algorithm: ""
+                  user:
+                    ID: "user-001"
+                    userName: "jorrit.stutterheim@cloudnation.nl"
+                  options:
+                    aggregate: false
+                  requestMetadata:
+                    jobId: "jorrit-stutterheim-7e2d9c4c"
+                    traces: {}
+              aggregate_query:
+                summary: SQL query with aggregation enabled
+                value:
+                  type: "sqlDataRequest"
+                  query: "SELECT AVG(wage) as avg_wage FROM wageGap GROUP BY sector"
+                  algorithm: ""
+                  user:
+                    ID: "user-001"
+                    userName: "jorrit.stutterheim@cloudnation.nl"
+                  options:
+                    aggregate: true
+                  requestMetadata:
+                    jobId: "jorrit-stutterheim-a1b2c3d4"
+                    traces: {}
+      responses:
+        '200':
+          description: |
+            Data request processed successfully. Returns the raw result bytes
+            from the microservice processing chain.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+                description: Raw result bytes from the processing pipeline
+            application/json:
+              schema:
+                type: object
+                description: JSON result from the processing pipeline (when applicable)
+        '400':
+          description: |
+            Bad request – invalid body, missing fields, unknown role, or no
+            matching job found for this user.
+          content:
+            text/plain:
+              schema:
+                type: string
+              examples:
+                bad_request:
+                  value: "Bad request"
+                no_job:
+                  value: "No job found for this user"
+        '401':
+          description: Unauthorized – missing or invalid Authorization header
+          content:
+            text/plain:
+              schema:
+                type: string
+              examples:
+                missing_header:
+                  value: "Authorization header is missing"
+                invalid_format:
+                  value: "Invalid Authorization header format"
+        '408':
+          description: Request timed out waiting for processing result
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: "Request timed out"
+        '500':
+          description: Internal server error during processing
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: "Internal server error"
+
+# -----------------------------------------------------------------------------
+# Components
+# -----------------------------------------------------------------------------
+components:
+  # ---------------------------------------------------------------------------
+  # Security Schemes
+  # ---------------------------------------------------------------------------
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        Bearer token authentication.
+        
+        > **Note:** Token validation is currently a placeholder. Any non-empty
+        > bearer token is accepted (e.g. `Authorization: bearer 1234`).
+
+  # ---------------------------------------------------------------------------
+  # Schemas
+  # ---------------------------------------------------------------------------
+  schemas:
+    # -------------------------------------------------------------------------
+    # Request Schemas
+    # -------------------------------------------------------------------------
+    SqlDataRequest:
+      type: object
+      description: |
+        A SQL data request in protobuf-JSON encoding.
+        This schema represents the JSON serialisation of the `SqlDataRequest`
+        protobuf message.
+      properties:
+        type:
+          type: string
+          description: Request type identifier
+          example: "sqlDataRequest"
+        query:
+          type: string
+          description: SQL query to execute against the dataset
+          example: "SELECT * FROM wageGap"
+        algorithm:
+          type: string
+          description: Optional algorithm name for processing
+          example: ""
+        user:
+          $ref: '#/components/schemas/User'
+        options:
+          $ref: '#/components/schemas/Options'
+        requestMetadata:
+          $ref: '#/components/schemas/RequestMetadata'
+
+    User:
+      type: object
+      properties:
+        ID:
+          type: string
+          description: Unique user identifier
+          example: "user-001"
+        userName:
+          type: string
+          description: User's email or username
+          example: "jorrit.stutterheim@cloudnation.nl"
+
+    Options:
+      type: object
+      description: Processing options for the data request
+      properties:
+        aggregate:
+          type: boolean
+          description: |
+            Whether to aggregate results from multiple data providers.
+            When `true`, the `dataThroughTtp` archetype is preferred.
+          default: false
+          example: false
+        graph:
+          type: boolean
+          description: Whether to generate graph output
+          default: false
+          example: false
+
+    RequestMetadata:
+      type: object
+      description: Metadata for tracing and routing the request through the system
+      properties:
+        jobId:
+          type: string
+          description: Unique job identifier assigned by the orchestrator
+          example: "jorrit-stutterheim-7e2d9c4c"
+        correlationId:
+          type: string
+          description: Correlation ID for matching requests and responses
+          example: "550e8400-e29b-41d4-a716-446655440000"
+        destinationQueue:
+          type: string
+          description: RabbitMQ destination queue name
+          example: "UVA-in"
+        returnAddress:
+          type: string
+          description: RabbitMQ return routing key
+          example: "SURF-in"
+        jobName:
+          type: string
+          description: Name of the Kubernetes job
+          example: "jorrit-stutterheim-7e2d9c4cuva1"
+        traces:
+          type: object
+          description: Distributed tracing metadata (binary trace spans)
+          additionalProperties:
+            type: string
+            format: byte
+
+    # -------------------------------------------------------------------------
+    # Common Schemas
+    # -------------------------------------------------------------------------
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+          description: Error message
+          example: "Internal server error"

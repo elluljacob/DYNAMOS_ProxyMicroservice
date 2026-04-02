@@ -22,6 +22,8 @@ var microserviceMetadataConfigLocation = addEtcdDir("microservices.json")
 var agreementsConfigLocation = addEtcdDir("agreements.json")
 var dataSetConfigLocation = addEtcdDir("datasets.json")
 var optionalMSConfigLocation = addEtcdDir("optional_microservices.json")
+var providerConfigsLocation = addEtcdDir("provider_configs.json")
+var eflintModelsDirectory = addEtcdDir("../eflint-models")
 
 var etcdEndpoints = "http://localhost:30005"
 

@@ -17,10 +17,30 @@ spec:
       containers:
       - name: policy-enforcer
         image: {{ .Values.dockerArtifactAccount }}/policy-enforcer:{{ .Values.branchNameTag }}
-        imagePullPolicy: Always
+        ports:
+        - name: http
+          containerPort: 8080
         env:
         - name: OC_AGENT_HOST
           value: {{ .Values.tracingEndpoint }}
+        readinessProbe:
+          httpGet:
+            path: /api/v1/health
+            port: http
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /api/v1/health
+            port: http
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        volumeMounts:
+        - name: eflint-states
+          mountPath: /app/eflint-states
+        - name: eflint-models
+          mountPath: /app/eflint-models
+          subPath: eflint-models
         # resources:
         #   requests:
         #     memory: "128Mi"
@@ -29,7 +49,6 @@ spec:
 
       - name: sidecar
         image: {{ .Values.dockerArtifactAccount }}/sidecar:{{ .Values.branchNameTag }}
-        imagePullPolicy: Always
         env:
         - name: AMQ_PASSWORD
           valueFrom:
@@ -40,3 +59,45 @@ spec:
           value: normal_user
         - name: OC_AGENT_HOST
           value: {{ .Values.tracingEndpoint }}
+      volumes:
+      - name: eflint-states
+        emptyDir: {}
+      - name: eflint-models
+        persistentVolumeClaim:
+          claimName: etcd-pvc
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: policy-enforcer
+  namespace: {{ .Values.Namespace }}
+spec:
+  selector:
+    app: policy-enforcer
+  ports:
+  - name: http
+    port: 8080
+    targetPort: http
+
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: policy-enforcer-ingress
+  namespace: {{ .Values.Namespace }}
+  annotations:
+    nginx.ingress.kubernetes.io/service-upstream: "true"
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: policy-enforcer.orchestrator.svc.cluster.local
+    http:
+      paths:
+      - pathType: Prefix
+        path: "/api/v1"
+        backend:
+          service:
+            name: policy-enforcer
+            port:
+              number: 8080

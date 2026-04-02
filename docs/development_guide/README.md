@@ -7,5 +7,6 @@ This folder contains all of the documentation.
 - [Building](./Building/README.md)
 - [Develop](./Develop/README.md)
 - [Observability](./Observability/README.md)
-
+- [Policy Enforcer](./policy_enforcer.md)
+- [Legacy Request Approval Flow](./legacy_request_approval_flow.md)
 
