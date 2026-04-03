@@ -52,7 +52,7 @@ kubectl delete service jaeger-collector-nodeport -n linkerd-jaeger --ignore-not-
 
 # Change this to the path of the DYNAMOS repository on your disk
 echo "Setting up paths..."
-DYNAMOS_ROOT="${HOME}/DYNAMOS"
+DYNAMOS_ROOT="${HOME}/dev/thesis/DYNAMOS"
 
 # Charts
 charts_path="${DYNAMOS_ROOT}/charts"
@@ -79,8 +79,8 @@ echo "Generating RabbitMQ password..."
 rabbit_pw=$(openssl rand -hex 16)
 
 # Use the RabbitCtl to make a special hash of that password:
-hashed_pw=$($SUDO docker run --rm rabbitmq:3-management rabbitmqctl hash_password $rabbit_pw)
-actual_hash=$(echo "$hashed_pw" | tail -n 1)
+rabbiq_mq_hash=$(docker run --rm rabbitmq:3-management rabbitmqctl hash_password $rabbit_pw)
+actual_hash=$(echo "$rabbiq_mq_hash" | cut -d $'\n' -f2)
 
 echo "Replacing tokens..."
 cp ${k8s_service_files}/definitions_example.json ${rabbit_definitions_file}

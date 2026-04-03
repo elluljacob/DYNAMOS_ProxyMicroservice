@@ -29,7 +29,17 @@ func registerAgent() {
 		log.Fatal(err)
 	}
 
-	go etcd.PutEtcdWithLease(etcdClient, fmt.Sprintf("/agents/online/%s", agentConfig.Name), string(configData))
+	go func() {
+		for {
+			if err := etcd.PutEtcdWithLease(etcdClient, fmt.Sprintf("/agents/online/%s", agentConfig.Name), string(configData)); err != nil {
+				logger.Sugar().Errorf("Failed to register agent: %v, retrying in 5s", err)
+				time.Sleep(5 * time.Second)
+				continue
+			}
+			logger.Sugar().Infof("Successfully registered %s in etcd", agentConfig.Name)
+			break
+		}
+	}()
 }
 
 func updateAgent() {

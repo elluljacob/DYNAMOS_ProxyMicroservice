@@ -5,7 +5,7 @@ export PATH := $(PATH):$(HOME)/go/bin
 branch_name := $(shell git rev-parse --abbrev-ref HEAD | sed "s/\//-/g")# List of SQL-based microservices to build and push
 sql_microservices := sql-algorithm sql-anonymize sql-aggregate sql-test
 # List of DYNAMOS core services
-dynamos_core := sidecar orchestrator agent api-gateway
+dynamos_core := sidecar orchestrator agent api-gateway ext-provider
 dynamos := $(dynamos_core) policy-enforcer
 # Docker Hub account for tagging and pushing images
 dockerhub_account := jacobellul04
@@ -78,7 +78,7 @@ policy-enforcer: prepare proto
 	(trap 'rm -f ./cmd/policy-enforcer/go.*; \
 			rm -rf ./cmd/policy-enforcer/pkg' EXIT; \
 		if [[ "$(PLATFORMS)" == *","* ]]; then \
-			(cd ./cmd/policy-enforcer && docker buildx build --platform $(PLATFORMS) --load \
+			(cd ./cmd/policy-enforcer && docker buildx build --platform $(PLATFORMS) --push  \
 				--build-arg NAME='policy-enforcer' \
 				--build-arg EFLINT_REPO='$(EFLINT_REPO)' \
 				--build-arg EFLINT_TAG='$(EFLINT_TAG)' \

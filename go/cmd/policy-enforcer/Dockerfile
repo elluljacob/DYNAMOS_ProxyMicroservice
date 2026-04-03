@@ -6,7 +6,9 @@ RUN ln -s /opt/ghc/9.2.8/bin/ghc /opt/ghc/9.2.8/bin/ghc-9.2
 # Install git and certs for cloning (buster repos are archived)
 RUN sed -i 's|deb.debian.org/debian|archive.debian.org/debian|g' /etc/apt/sources.list \
     && sed -i 's|security.debian.org/debian-security|archive.debian.org/debian-security|g' /etc/apt/sources.list \
+    && sed -i '/buster-updates/d' /etc/apt/sources.list \
     && echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99no-check-valid-until \
+    && echo 'Acquire::AllowInsecureRepositories "true";' >> /etc/apt/apt.conf.d/99no-check-valid-until \
     && apt-get update && apt-get install -y --no-install-recommends \
     git \
     ca-certificates \
@@ -21,7 +23,7 @@ RUN cabal update
 RUN cabal install
 RUN cp /root/.cabal/bin/eflint-server /usr/bin/eflint-server
 
-FROM golang:1.22.1-bullseye AS go-builder
+FROM golang:1.23-bullseye AS go-builder
 ARG NAME
 ENV NAME=$NAME
 
