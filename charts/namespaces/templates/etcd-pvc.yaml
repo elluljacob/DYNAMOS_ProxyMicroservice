@@ -24,14 +24,20 @@ spec:
       annotations:
         "linkerd.io/inject": "disabled"
     spec:
+      securityContext:
+        runAsUser: 0
+        fsGroup: 0
       containers:
       - name: init
         image: curlimages/curl
+        securityContext:
+          runAsUser: 0
         command:
           - /bin/sh
           - -c
           - |
-            base_url="https://raw.githubusercontent.com/Jorrit05/DYNAMOS/main/configuration/etcd_launch_files"
+            chmod -R 777 /etcd
+            base_url="https://raw.githubusercontent.com/jacobellul04/DYNAMOS/merger/configuration/etcd_launch_files"
             files="agreements.json archetype.json datasets.json microservices.json optional_microservices.json requestType.json"
 
             for file in $files; do
