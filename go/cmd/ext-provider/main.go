@@ -49,6 +49,12 @@ func main() {
 	}
 	logger.Debug("Database connection established successfully.")
 
+	logger.Debug("Loading policy file...")
+	if err := LoadAndLogPolicy(); err != nil {
+		logger.Sugar().Fatalf("Failed to load policy: %v", err)
+	}
+	logger.Debug("Policy file loaded successfully.")
+
 	// Init DYNAMOS/Sidecar Config
 	// Note: We pass SidecarHandler from sidecar.go
 	config, err := msinit.NewConfiguration(context.Background(), serviceName, grpcAddr, COORDINATOR, SidecarHandler)

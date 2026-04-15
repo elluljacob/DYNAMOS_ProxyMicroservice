@@ -1,0 +1,33 @@
+{
+  "@context": "http://www.w3.org/ns/odrl.jsonld",
+  "@type": "Policy",
+  "uid": "snowflake-policy-001",
+  "permission": [
+    {
+      "target": "DYNAMOS.PUBLIC.PATIENT_DATA",
+      "action": "read",
+      "assignee": "doctor",
+      "constraint": [
+        {
+          "leftOperand": "column",
+          "operator": "exclude",
+          "rightOperand": ["ssn", "credit_card"]
+        }
+      ]
+    }
+  ],
+  "prohibition": [
+    {
+      "target": "DYNAMOS.PUBLIC.PATIENT_DATA",
+      "action": "read",
+      "assignee": "researcher",
+      "constraint": [
+        {
+          "leftOperand": "row",
+          "operator": "filter",
+          "rightOperand": "region = 'EU'"
+        }
+      ]
+    }
+  ]
+}

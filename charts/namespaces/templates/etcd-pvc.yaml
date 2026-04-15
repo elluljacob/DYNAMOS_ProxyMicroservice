@@ -24,6 +24,9 @@ spec:
       annotations:
         "linkerd.io/inject": "disabled"
     spec:
+      securityContext:
+        runAsUser: 0
+        fsGroup: 0
       containers:
       - name: init
         image: curlimages/curl

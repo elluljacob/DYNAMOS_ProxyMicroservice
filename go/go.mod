@@ -1,6 +1,6 @@
 module github.com/Jorrit05/DYNAMOS
 
-go 1.23.0
+go 1.24.0
 
 toolchain go1.24.12
 
@@ -12,7 +12,7 @@ require (
 	github.com/googollee/go-socket.io v1.7.0
 	github.com/gorilla/handlers v1.5.1
 	github.com/rabbitmq/amqp091-go v1.10.0
-	github.com/snowflakedb/gosnowflake v1.18.1
+	github.com/snowflakedb/gosnowflake v1.19.1
 	github.com/stretchr/testify v1.10.0
 	github.com/tsenart/vegeta/v12 v12.11.0
 	go.etcd.io/etcd/api/v3 v3.5.12

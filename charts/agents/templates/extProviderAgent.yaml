@@ -13,7 +13,7 @@ spec:
       labels:
         app: ext-provider
       annotations:
-        "linkerd.io/inject" : enabled
+        "linkerd.io/inject": enabled
         "config.linkerd.io/skip-inbound-ports": "8080"
     spec:
       serviceAccountName: job-creator-ext-provider
@@ -25,19 +25,21 @@ spec:
             - name: DATA_STEWARD_NAME
               value: EXT-PROVIDER
             - name: SNOWFLAKE_DSN
-              value: "user:pass@host.docker.internal:9090/TEST_DB/PUBLIC?account=test&protocol=http"
+              value: "Jacob:GaDFKjMLdQ3Vj9P@fqjdlkb-vx40353/DYNAMOS/PUBLIC?warehouse=COMPUTE_WH"
             - name: OC_AGENT_HOST
-              value: {{ .Values.tracingEndpoint }} 
+              value: {{ .Values.tracingEndpoint }}
             - name: DESIGNATED_GRPC_PORT
               value: "8081"
             - name: FIRST
-              value: "1"  # 1 for True (since this is the entry point)
+              value: "1"
             - name: LAST
-              value: "1"  # 1 for True (since this is also the exit point)
+              value: "1"
             - name: JOB_NAME
               value: "ext-provider-job"
             - name: SIDECAR_PORT
-              value: "50051" # Default port the sidecar listens on
+              value: "50051"
+            - name: POLICY_PATH
+              value: "/config/snowflake_policy/agreements.json"
         - name: sidecar
           image: {{ .Values.dockerArtifactAccount }}/sidecar:{{ .Values.branchNameTag }}
           imagePullPolicy: Always

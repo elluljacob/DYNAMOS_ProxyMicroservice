@@ -6,7 +6,7 @@ branch_name := $(shell git rev-parse --abbrev-ref HEAD | sed 's#/#-#g')
 # List of SQL-based microservices to build and push
 sql_microservices := sql-algorithm sql-anonymize sql-aggregate sql-test
 # List of DYNAMOS core services
-dynamos := sidecar policy-enforcer orchestrator agent api-gateway ext-provider # added ext-provider
+dynamos := sidecar policy-enforcer orchestrator agent api-gateway
 # Docker Hub account for tagging and pushing images
 dockerhub_account := jacobellul04
 
@@ -33,6 +33,26 @@ proto:
 		--go_out=./pkg/proto --go_opt=paths=source_relative \
 		--go-grpc_out=./pkg/proto --go-grpc_opt=paths=source_relative \
 		../proto-files/*.proto
+
+ext-provider: prepare proto
+	cp go.mod go.sum ./cmd/ext-provider
+	cp -r pkg ./cmd/ext-provider
+	mkdir -p ./cmd/ext-provider/config/snowflake_policy
+	cp ../configuration/snowflake_policy/agreements.json ./cmd/ext-provider/config/snowflake_policy/agreements.json
+
+	(trap 'rm -f ./cmd/ext-provider/go.*; \
+			rm -rf ./cmd/ext-provider/pkg; \
+			rm -rf ./cmd/ext-provider/config' EXIT; \
+		echo "=== CONFIG BEFORE BUILD ===" && \
+		cat ./cmd/ext-provider/config/snowflake_policy/agreements.json && \
+		docker build --no-cache --build-arg NAME='ext-provider' \
+			-f ./cmd/ext-provider/Dockerfile.ext-provider \
+			-t $(dockerhub_account)/ext-provider:$(branch_name) \
+			-t $(dockerhub_account)/ext-provider:latest \
+			./cmd/ext-provider/)
+
+	docker push $(dockerhub_account)/ext-provider:$(branch_name)
+	docker push $(dockerhub_account)/ext-provider:latest
 
 # Pattern rule for building and pushing any service, allowing to reuse the same code for all services
 # Design and general notes:
