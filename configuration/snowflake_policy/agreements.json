@@ -1,33 +1,33 @@
 {
   "@context": "http://www.w3.org/ns/odrl.jsonld",
   "@type": "Policy",
-  "uid": "snowflake-policy-001",
-  "permission": [
+  "uid": "dynamos-ext-provider-001",
+  "permissions": [
     {
-      "target": "DYNAMOS.PUBLIC.PATIENT_DATA",
-      "action": "read",
-      "assignee": "doctor",
-      "constraint": [
-        {
-          "leftOperand": "column",
-          "operator": "exclude",
-          "rightOperand": ["ssn", "credit_card"]
+      "assignee": "RESEARCHER",
+      "tables": {
+        "PERSONEN": {
+          "visible": ["INSTCODE", "UNIEKNR", "GESLACHT", "PEILDAT"],
+          "masked": { "GEBDAT": "****", "NATIONALITEIT": "****" }
+        },
+        "AANSTELLINGEN": {
+          "visible": ["INSTCODE", "UNIEKNR", "FUNCTCAT", "HOOPGEB", "TAAKOMV", "AANST_22", "PEILDAT"],
+          "masked": { "SALSCHAL": "0" }
         }
-      ]
-    }
-  ],
-  "prohibition": [
+      }
+    },
     {
-      "target": "DYNAMOS.PUBLIC.PATIENT_DATA",
-      "action": "read",
-      "assignee": "researcher",
-      "constraint": [
-        {
-          "leftOperand": "row",
-          "operator": "filter",
-          "rightOperand": "region = 'EU'"
+      "assignee": "DATA_STEWARD",
+      "tables": {
+        "PERSONEN": {
+          "visible": ["INSTCODE", "UNIEKNR", "GESLACHT", "GEBDAT", "NATIONALITEIT", "BKO", "SKO", "PEILDAT"],
+          "masked": {}
+        },
+        "AANSTELLINGEN": {
+          "visible": ["INSTCODE", "UNIEKNR", "VOLGNRAR", "AADNSTVB", "INGDATDV", "EINDATDV", "HOOPGEB", "FUNCTCAT", "WELGEENHGL", "SALSCHAL", "TAAKOMV", "AANST_22", "PEILDAT"],
+          "masked": {}
         }
-      ]
+      }
     }
   ]
 }

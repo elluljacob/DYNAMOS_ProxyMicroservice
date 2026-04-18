@@ -20,18 +20,16 @@ var (
 	logger      = lib.InitLogger(logLevel)
 	COORDINATOR = make(chan struct{})
 	port        = ":8080"
-	agentConfig lib.AgentDetails // used in register_agent.go
+	agentConfig lib.AgentDetails
 	etcdClient  *clientv3.Client = etcd.GetEtcdClient(etcdEndpoints)
 )
 
 func main() {
-	// Setup Service Name
 	serviceName = os.Getenv("DATA_STEWARD_NAME")
 	if serviceName == "" {
 		serviceName = "EXT-PROVIDER"
 	}
 
-	// Init Tracing
 	oce, err := lib.InitTracer(serviceName)
 	if err != nil {
 		logger.Sugar().Fatalf("Failed to create ocagent-exporter: %v", err)
@@ -49,28 +47,21 @@ func main() {
 	}
 	logger.Debug("Database connection established successfully.")
 
-	logger.Debug("Loading policy file...")
-	if err := LoadAndLogPolicy(); err != nil {
+	logger.Debug("Loading policy from etcd...")
+	if err := LoadPolicy(context.Background(), etcdClient); err != nil {
 		logger.Sugar().Fatalf("Failed to load policy: %v", err)
 	}
-	logger.Debug("Policy file loaded successfully.")
+	logger.Debug("Policy loaded successfully.")
 
-	// Init DYNAMOS/Sidecar Config
-	// Note: We pass SidecarHandler from sidecar.go
 	config, err := msinit.NewConfiguration(context.Background(), serviceName, grpcAddr, COORDINATOR, SidecarHandler)
 	if err != nil {
 		logger.Sugar().Fatalf("%v", err)
 	}
 
-	// Start HTTP Server
 	go startHTTPServer()
-
-	// Register with DYNAMOS
 	registerAgent()
 
-	// Block until shutdown
 	<-config.StopMicroservice
-
 	config.SafeExit(oce, serviceName)
 	os.Exit(0)
 }
@@ -82,11 +73,7 @@ func startHTTPServer() {
 
 	agentMux := http.NewServeMux()
 	path := fmt.Sprintf("/agent/v1/sqlDataRequest/%s", strings.ToLower(serviceName))
-
-	// Handler from handlers.go
 	agentMux.Handle(path, &ochttp.Handler{Handler: HandleSQLRequest()})
-
-	// Middleware from middleware.go
 	wrappedMux := AuthMiddleware(agentMux)
 
 	logger.Sugar().Infof("Starting http server on port %s and path %s", port, path)

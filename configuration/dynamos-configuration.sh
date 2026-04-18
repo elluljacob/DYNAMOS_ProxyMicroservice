@@ -129,6 +129,19 @@ helm upgrade -i nginx oci://ghcr.io/nginxinc/charts/nginx-ingress \
 echo "Installing DYNAMOS core..."
 helm upgrade -i -f ${core_chart}/values.yaml core ${core_chart} --set hostPath=${HOME}
 
+sleep 1
+echo "Pushing snowflake policies to etcd..."
+kubectl wait --for=condition=ready pod -l app=etcd -n core --timeout=60s
+
+kubectl exec -it etcd-0 -n core -c etcd -- etcdctl put /policyEnforcer/dataPolicy/EXT-PROVIDER \
+  "$(cat ${config_path}/snowflake_policy/agreements.json)"
+
+echo "Snowflake policies pushed to etcd"
+
+echo "Pushing EXT-PROVIDER agreement to etcd..."
+kubectl exec -it etcd-0 -n core -c etcd -- etcdctl put /policyEnforcer/agreements/EXT-PROVIDER \
+  "$(cat ${config_path}/etcd_launch_files/agreements.json | python3 -c "import json,sys; data=json.load(sys.stdin); print(json.dumps(next(a for a in data if a['name']=='EXT-PROVIDER')))")"
+  
 sleep 3
 # Install orchestrator layer
 helm upgrade -i -f "${orchestrator_chart}/values.yaml" orchestrator ${orchestrator_chart}

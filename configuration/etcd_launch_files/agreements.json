@@ -70,9 +70,26 @@
         "relations": {
             "jacob.test@example.com": {
                 "ID": "GUID",
+                "role": "DATA_STEWARD",
                 "requestTypes": [
                     "sqlDataRequest",
                     "genericRequest"
+                ],
+                "dataSets": [
+                    "external_data"
+                ],
+                "allowedArchetypes": [
+                    "computeToData"
+                ],
+                "allowedComputeProviders": [
+                    "SURF"
+                ]
+            },
+            "jorrit.stutterheim@cloudnation.nl": {
+                "ID": "GUID",
+                "role": "RESEARCHER",
+                "requestTypes": [
+                    "sqlDataRequest"
                 ],
                 "dataSets": [
                     "external_data"

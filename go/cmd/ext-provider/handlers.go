@@ -19,25 +19,41 @@ func HandleSQLRequest() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		logger.Sugar().Infof("[HTTP] %s request on %s", r.Method, r.URL.Path)
 
-		// Parse Body
+		// Read body once
+		body, _ := io.ReadAll(r.Body)
+		logger.Sugar().Debugf("Request body: %s", string(body))
+
+		var userInfo struct {
+			User struct {
+				UserName string `json:"user_name"`
+			} `json:"user"`
+		}
+		json.Unmarshal(body, &userInfo)
+		logger.Sugar().Debugf("Parsed userName: %q", userInfo.User.UserName)
+
+		role := getRoleForUser(userInfo.User.UserName)
+		logger.Sugar().Infof("User %q assigned role: %s", userInfo.User.UserName, role)
+
+		// Restore body for parseBody
+		r.Body = io.NopCloser(strings.NewReader(string(body)))
 		query, err := parseBody(r)
 		if err != nil {
-			logger.Sugar().Errorf("Failed to parse body: %v", err)
 			http.Error(w, "Invalid Request Body", http.StatusBadRequest)
 			return
 		}
 
-		logger.Sugar().Infof("[HTTP] Executing SQL Query: %s", query)
-
-		// Call Database Logic
-		result, err := QuerySnowflake(r.Context(), query)
+		rewritten, err := RewriteQuery(role, query)
 		if err != nil {
-			// Found an error? Handle it and return immediately.
+			http.Error(w, fmt.Sprintf("Policy error: %v", err), http.StatusForbidden)
+			return
+		}
+
+		result, err := QuerySnowflake(r.Context(), rewritten)
+		if err != nil {
 			handleDBError(w, err)
 			return
 		}
 
-		// Success: Write result
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(result))
 	}
