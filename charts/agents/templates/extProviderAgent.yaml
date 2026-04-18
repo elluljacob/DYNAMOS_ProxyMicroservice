@@ -87,3 +87,10 @@ spec:
                 name: ext-provider
                 port:
                   number: 8080
+          - pathType: Prefix
+            path: "/agent/v1/pythonDataRequest/ext-provider"
+            backend:
+              service:
+                name: ext-provider
+                port:
+                  number: 8080

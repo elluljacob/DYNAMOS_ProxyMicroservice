@@ -19,39 +19,50 @@ func HandleSQLRequest() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		logger.Sugar().Infof("[HTTP] %s request on %s", r.Method, r.URL.Path)
 
-		// Read body once
-		body, _ := io.ReadAll(r.Body)
-		logger.Sugar().Debugf("Request body: %s", string(body))
+		bodyBytes, _ := io.ReadAll(r.Body)
+		logger.Sugar().Debugf("Request body: %s", string(bodyBytes))
 
-		var userInfo struct {
-			User struct {
-				UserName string `json:"user_name"`
-			} `json:"user"`
-		}
-		json.Unmarshal(body, &userInfo)
-		logger.Sugar().Debugf("Parsed userName: %q", userInfo.User.UserName)
+		var req RequestBody
+		json.Unmarshal(bodyBytes, &req)
+		logger.Sugar().Debugf("Parsed userName: %q", req.User.UserName)
 
-		role := getRoleForUser(userInfo.User.UserName)
-		logger.Sugar().Infof("User %q assigned role: %s", userInfo.User.UserName, role)
+		role := getRoleForUser(req.User.UserName)
+		logger.Sugar().Infof("User %q assigned role: %s", req.User.UserName, role)
 
-		// Restore body for parseBody
-		r.Body = io.NopCloser(strings.NewReader(string(body)))
-		query, err := parseBody(r)
-		if err != nil {
-			http.Error(w, "Invalid Request Body", http.StatusBadRequest)
-			return
-		}
+		var result string
+		var err error
 
-		rewritten, err := RewriteQuery(role, query)
-		if err != nil {
-			http.Error(w, fmt.Sprintf("Policy error: %v", err), http.StatusForbidden)
-			return
-		}
+		switch strings.ToLower(req.Type) {
+		case "pythondatarequest":
+			result, err = ExecutePython(r.Context(), role, req.PythonCode)
+			if err != nil {
+				handleDBError(w, err)
+				return
+			}
 
-		result, err := QuerySnowflake(r.Context(), rewritten)
-		if err != nil {
-			handleDBError(w, err)
-			return
+		default: // sqlDataRequest
+			query := req.Query
+			if query == "" {
+				query = string(bodyBytes)
+			}
+
+			rewritten, err := RewriteQuery(role, query)
+			if err != nil {
+				http.Error(w, fmt.Sprintf("Policy error: %v", err), http.StatusForbidden)
+				return
+			}
+
+			rows, cols, err := QuerySnowflake(r.Context(), rewritten)
+			if err != nil {
+				handleDBError(w, err)
+				return
+			}
+
+			result, err = ProcessResult(req.Algorithm, rows, cols)
+			if err != nil {
+				http.Error(w, fmt.Sprintf("Algorithm error: %v", err), http.StatusInternalServerError)
+				return
+			}
 		}
 
 		w.WriteHeader(http.StatusOK)

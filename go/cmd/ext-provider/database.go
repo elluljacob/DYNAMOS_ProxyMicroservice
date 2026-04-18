@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
-	"strings"
 	"sync"
 	"time"
 
@@ -45,71 +44,59 @@ func InitDB() error {
 }
 
 // QuerySnowflake handles the execution using the existing pool
-func QuerySnowflake(ctx context.Context, query string) (string, error) {
+// QuerySnowflake returns structured rows and column names
+func QuerySnowflake(ctx context.Context, query string) ([][]string, []string, error) {
 	if snowflakeDB == nil {
-		// Fallback or lazy init if InitDB wasn't called (safety net)
 		if err := InitDB(); err != nil {
-			return "Error Init DB", err
+			return nil, nil, err
 		}
 	}
 
-	// Use a timeout for the Query
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
 	logger.Debug("Attempting to query Snowflake...")
 
-	// QueryContext
 	rows, err := snowflakeDB.QueryContext(ctx, query)
 	if err != nil {
-		return "Error executing query", err // Return raw error to handler for inspection
+		return nil, nil, err
 	}
 	defer rows.Close()
 
-	// Scan Results
-	var result strings.Builder
-	var hasResults bool
+	columns, err := rows.Columns()
+	if err != nil {
+		return nil, nil, err
+	}
 
-	// Get column names to handle dynamic results better
-	columns, _ := rows.Columns()
 	count := len(columns)
 	values := make([]interface{}, count)
 	valuePtrs := make([]interface{}, count)
+	for i := range columns {
+		valuePtrs[i] = &values[i]
+	}
 
+	var result [][]string
 	for rows.Next() {
-		hasResults = true
-		// Initialize pointers
-		for i := range columns {
-			valuePtrs[i] = &values[i]
-		}
-
 		if err := rows.Scan(valuePtrs...); err != nil {
-			return "Error scanning row", fmt.Errorf("row scan failed: %w", err)
+			return nil, nil, fmt.Errorf("row scan failed: %w", err)
 		}
-
-		// Simple formatter
+		row := make([]string, count)
 		for i, val := range values {
-			if i > 0 {
-				result.WriteString(", ")
-			}
-			// Handle nil/bytes/etc
 			switch v := val.(type) {
 			case []byte:
-				result.Write(v)
+				row[i] = string(v)
+			case nil:
+				row[i] = ""
 			default:
-				result.WriteString(fmt.Sprintf("%v", v))
+				row[i] = fmt.Sprintf("%v", v)
 			}
 		}
+		result = append(result, row)
 	}
 
-	// Check for errors that occurred *during* iteration
 	if err := rows.Err(); err != nil {
-		return "Error during row iteration", fmt.Errorf("error during row iteration: %w", err)
+		return nil, nil, fmt.Errorf("error during row iteration: %w", err)
 	}
 
-	if !hasResults {
-		return "0", nil
-	}
-
-	return result.String(), nil
+	return result, columns, nil
 }

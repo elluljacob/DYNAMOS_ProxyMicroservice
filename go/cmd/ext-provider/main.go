@@ -72,11 +72,16 @@ func startHTTPServer() {
 	methodsOk := handlers.AllowedMethods([]string{"GET", "HEAD", "POST", "PUT", "OPTIONS"})
 
 	agentMux := http.NewServeMux()
-	path := fmt.Sprintf("/agent/v1/sqlDataRequest/%s", strings.ToLower(serviceName))
-	agentMux.Handle(path, &ochttp.Handler{Handler: HandleSQLRequest()})
+
+	sqlPath := fmt.Sprintf("/agent/v1/sqlDataRequest/%s", strings.ToLower(serviceName))
+	pythonPath := fmt.Sprintf("/agent/v1/pythonDataRequest/%s", strings.ToLower(serviceName))
+
+	agentMux.Handle(sqlPath, &ochttp.Handler{Handler: HandleSQLRequest()})
+	agentMux.Handle(pythonPath, &ochttp.Handler{Handler: HandleSQLRequest()}) // same handler, type detected from body
+
 	wrappedMux := AuthMiddleware(agentMux)
 
-	logger.Sugar().Infof("Starting http server on port %s and path %s", port, path)
+	logger.Sugar().Infof("Starting http server on port %s, paths: %s, %s", port, sqlPath, pythonPath)
 	if err := http.ListenAndServe(port, api.LogMiddleware(handlers.CORS(originsOk, headersOk, methodsOk)(wrappedMux))); err != nil {
 		logger.Sugar().Fatalf("Error starting HTTP server: %v", err)
 	}

@@ -73,7 +73,8 @@
                 "role": "DATA_STEWARD",
                 "requestTypes": [
                     "sqlDataRequest",
-                    "genericRequest"
+                    "genericRequest",
+                    "pythonDataRequest"
                 ],
                 "dataSets": [
                     "external_data"
@@ -89,7 +90,8 @@
                 "ID": "GUID",
                 "role": "RESEARCHER",
                 "requestTypes": [
-                    "sqlDataRequest"
+                    "sqlDataRequest",
+                    "pythonDataRequest"
                 ],
                 "dataSets": [
                     "external_data"

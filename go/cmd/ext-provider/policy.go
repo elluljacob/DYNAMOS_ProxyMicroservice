@@ -141,7 +141,7 @@ func createViewsFromPolicy(ctx context.Context, policy *ODRLPolicy) error {
 			)
 
 			logger.Sugar().Infof("Creating view: %s", viewName)
-			if _, err := QuerySnowflake(ctx, ddl); err != nil {
+			if _, _, err := QuerySnowflake(ctx, ddl); err != nil {
 				return fmt.Errorf("failed to create view %s: %w", viewName, err)
 			}
 		}
