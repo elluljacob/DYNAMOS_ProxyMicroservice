@@ -6,12 +6,12 @@ import (
 	"strings"
 )
 
-func ExecutePython(ctx context.Context, role, pythonCode string) (string, error) {
+func ExecutePython(ctx context.Context, role, pythonCode, userName string) (string, error) {
 	if pythonCode == "" {
 		return "", fmt.Errorf("no python code provided")
 	}
 
-	rewrittenCode := rewritePythonTableRefs(role, pythonCode)
+	rewrittenCode := rewritePythonTableRefs(role, pythonCode, userName)
 	procName := fmt.Sprintf("DYNAMOS_PROC_%s", strings.ToUpper(role))
 
 	// Extract just the function body if user submitted a full def run(...): block
@@ -104,7 +104,7 @@ func indentCode(code string) string {
 }
 
 // rewritePythonTableRefs replaces table names in Python code with role-appropriate views
-func rewritePythonTableRefs(role, code string) string {
+func rewritePythonTableRefs(role, code, userName string) string {
 	globalPolicyMu.RLock()
 	policy := globalPolicy
 	globalPolicyMu.RUnlock()
@@ -113,7 +113,6 @@ func rewritePythonTableRefs(role, code string) string {
 		return code
 	}
 
-	// Find the permission for this role
 	var perm *Permission
 	for i, p := range policy.Permissions {
 		if strings.EqualFold(p.Assignee, role) {
@@ -131,5 +130,71 @@ func rewritePythonTableRefs(role, code string) string {
 		rewritten = replaceTableName(rewritten, tableName, view)
 	}
 
+	// For Python, inject the filter as a .filter() call after .table()
+	if perm.RowAccess != nil {
+		rewritten = injectPythonRowFilter(rewritten, perm.RowAccess, userName)
+	}
+
 	return rewritten
+}
+
+func injectPythonRowFilter(code string, rowAccess *RowAccess, userName string) string {
+	// Replace session.table("X") with session.table("X").filter(col("INSTCODE").isin(...))
+	// Simpler: just append a SQL WHERE via session.sql instead
+	// We inject a filter comment that the user can see, and wrap the logic
+	filter := fmt.Sprintf(
+		`.filter(session._conn._cursor.execute("SELECT %s FROM %s WHERE %s = '%s'"))`,
+		rowAccess.DataColumn,
+		rowAccess.FilterTable,
+		rowAccess.UserColumn,
+		userName,
+	)
+	// Actually the cleanest approach for Snowpark Python is to use a subquery in the filter
+	// Replace .table("VIEW") with .table("VIEW").filter(F.col("INSTCODE").isin([...]))
+	// But since we can't execute SQL in the view creation, inject as a where string
+	_ = filter
+
+	// Inject as a SQL WHERE clause into any session.sql() calls, or
+	// wrap table calls with a filter — simplest is to rewrite to session.sql()
+	subquery := fmt.Sprintf(
+		"SELECT * FROM %s WHERE %s IN (SELECT %s FROM %s WHERE %s = '%s')",
+		// This gets filled per table — for simplicity just add to the code as a comment
+		// and rely on the view already being role-scoped
+		"__TABLE__", rowAccess.TargetColumn,
+		rowAccess.DataColumn, rowAccess.FilterTable,
+		rowAccess.UserColumn, userName,
+	)
+	logger.Sugar().Debugf("Python row filter subquery template: %s", subquery)
+
+	// For Python the view already scopes columns — add row filter via .where()
+	// Replace: session.table("PERSONEN_RESEARCHER")
+	// With:    session.table("PERSONEN_RESEARCHER").where(f"INSTCODE IN (SELECT INSTCODE FROM USER_ACCESS WHERE EMAIL = 'jorrit@...')")
+	filterExpr := fmt.Sprintf(
+		`.where("%s IN (SELECT %s FROM %s WHERE %s = '%s')")`,
+		rowAccess.TargetColumn,
+		rowAccess.DataColumn,
+		rowAccess.FilterTable,
+		rowAccess.UserColumn,
+		userName,
+	)
+
+	// Apply after every .table("...") call
+	result := strings.ReplaceAll(code, ".table(", ".table(")
+	// Find all .table("...") occurrences and append .where(...)
+	lines := strings.Split(result, "\n")
+	for i, line := range lines {
+		if strings.Contains(line, ".table(") {
+			lines[i] = strings.Replace(line, ".table(", ".table(", 1)
+			// Append filter at end of the table() call
+			// Find the closing paren
+			tableIdx := strings.Index(lines[i], ".table(")
+			rest := lines[i][tableIdx:]
+			closeIdx := strings.Index(rest, ")")
+			if closeIdx != -1 {
+				insertAt := tableIdx + closeIdx + 1
+				lines[i] = lines[i][:insertAt] + filterExpr + lines[i][insertAt:]
+			}
+		}
+	}
+	return strings.Join(lines, "\n")
 }

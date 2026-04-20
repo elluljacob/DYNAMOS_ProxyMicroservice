@@ -5,6 +5,12 @@
   "permissions": [
     {
       "assignee": "RESEARCHER",
+      "rowAccess": {
+        "filterTable": "USER_ACCESS",
+        "userColumn": "EMAIL",
+        "dataColumn": "INSTCODE",
+        "targetColumn": "INSTCODE"
+      },
       "tables": {
         "PERSONEN": {
           "visible": ["INSTCODE", "UNIEKNR", "GESLACHT", "PEILDAT"],
@@ -18,6 +24,7 @@
     },
     {
       "assignee": "DATA_STEWARD",
+      "rowAccess": null,
       "tables": {
         "PERSONEN": {
           "visible": ["INSTCODE", "UNIEKNR", "GESLACHT", "GEBDAT", "NATIONALITEIT", "BKO", "SKO", "PEILDAT"],

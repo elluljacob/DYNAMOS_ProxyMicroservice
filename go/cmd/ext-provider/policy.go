@@ -17,11 +17,18 @@ type TableConfig struct {
 	Masked  map[string]string `json:"masked"`
 }
 
-type Permission struct {
-	Assignee string                 `json:"assignee"`
-	Tables   map[string]TableConfig `json:"tables"`
+type RowAccess struct {
+	FilterTable  string `json:"filterTable"`
+	UserColumn   string `json:"userColumn"`
+	DataColumn   string `json:"dataColumn"`
+	TargetColumn string `json:"targetColumn"`
 }
 
+type Permission struct {
+	Assignee  string                 `json:"assignee"`
+	RowAccess *RowAccess             `json:"rowAccess"`
+	Tables    map[string]TableConfig `json:"tables"`
+}
 type ODRLPolicy struct {
 	Context     string       `json:"@context"`
 	Type        string       `json:"@type"`
@@ -155,7 +162,7 @@ func viewNameForRole(role, table string) string {
 }
 
 // RewriteQuery rewrites table names in the query to use role-appropriate views
-func RewriteQuery(role, query string) (string, error) {
+func RewriteQuery(role, query, userName string) (string, error) {
 	if query == "" {
 		return "", fmt.Errorf("empty query")
 	}
@@ -168,7 +175,6 @@ func RewriteQuery(role, query string) (string, error) {
 		return "", fmt.Errorf("policy not loaded")
 	}
 
-	// Find the permission for this role
 	var perm *Permission
 	for i, p := range policy.Permissions {
 		if strings.EqualFold(p.Assignee, role) {
@@ -176,7 +182,6 @@ func RewriteQuery(role, query string) (string, error) {
 			break
 		}
 	}
-	// Fallback to RESEARCHER
 	if perm == nil {
 		for i, p := range policy.Permissions {
 			if strings.EqualFold(p.Assignee, "RESEARCHER") {
@@ -195,8 +200,32 @@ func RewriteQuery(role, query string) (string, error) {
 		rewritten = replaceTableName(rewritten, tableName, view)
 	}
 
-	logger.Sugar().Debugf("Rewritten query for role %s: %s", role, rewritten)
+	if perm.RowAccess != nil {
+		rewritten = injectRowFilter(rewritten, perm.RowAccess, userName)
+	}
+
+	logger.Sugar().Debugf("Rewritten query for role %s user %s: %s", role, userName, rewritten)
 	return rewritten, nil
+}
+
+func injectRowFilter(query string, rowAccess *RowAccess, userName string) string {
+	filter := fmt.Sprintf("%s IN (SELECT %s FROM %s WHERE %s = '%s')",
+		rowAccess.TargetColumn,
+		rowAccess.DataColumn,
+		rowAccess.FilterTable,
+		rowAccess.UserColumn,
+		userName,
+	)
+
+	upper := strings.ToUpper(query)
+	if strings.Contains(upper, "WHERE") {
+		idx := strings.Index(upper, "WHERE")
+		return query[:idx+5] + " " + filter + " AND" + query[idx+5:]
+	} else if strings.Contains(upper, "LIMIT") {
+		idx := strings.Index(upper, "LIMIT")
+		return query[:idx] + "WHERE " + filter + " " + query[idx:]
+	}
+	return query + " WHERE " + filter
 }
 
 // replaceTableName does a case-insensitive whole-word replacement of a table name

@@ -34,7 +34,7 @@ func HandleSQLRequest() http.HandlerFunc {
 
 		switch strings.ToLower(req.Type) {
 		case "pythondatarequest":
-			result, err = ExecutePython(r.Context(), role, req.PythonCode)
+			result, err = ExecutePython(r.Context(), role, req.PythonCode, req.User.UserName)
 			if err != nil {
 				handleDBError(w, err)
 				return
@@ -46,7 +46,7 @@ func HandleSQLRequest() http.HandlerFunc {
 				query = string(bodyBytes)
 			}
 
-			rewritten, err := RewriteQuery(role, query)
+			rewritten, err := RewriteQuery(role, query, req.User.UserName)
 			if err != nil {
 				http.Error(w, fmt.Sprintf("Policy error: %v", err), http.StatusForbidden)
 				return
