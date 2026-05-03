@@ -201,31 +201,74 @@ func RewriteQuery(role, query, userName string) (string, error) {
 	}
 
 	if perm.RowAccess != nil {
-		rewritten = injectRowFilter(rewritten, perm.RowAccess, userName)
+		rewritten = injectRowFilter(rewritten, perm.RowAccess, userName, perm)
 	}
 
 	logger.Sugar().Debugf("Rewritten query for role %s user %s: %s", role, userName, rewritten)
 	return rewritten, nil
 }
 
-func injectRowFilter(query string, rowAccess *RowAccess, userName string) string {
-	filter := fmt.Sprintf("%s IN (SELECT %s FROM %s WHERE %s = '%s')",
-		rowAccess.TargetColumn,
+func getTableAlias(query, tableName string) string {
+	upper := strings.ToUpper(query)
+	tableUpper := strings.ToUpper(tableName)
+
+	idx := strings.Index(upper, tableUpper)
+	if idx == -1 {
+		return tableName
+	}
+
+	// Get everything after the table name
+	rest := strings.TrimSpace(query[idx+len(tableName):])
+
+	// If next word is not a keyword, it's the alias
+	words := strings.Fields(rest)
+	if len(words) > 0 {
+		first := strings.ToUpper(words[0])
+		if first != "WHERE" && first != "JOIN" && first != "ON" &&
+			first != "LIMIT" && first != "GROUP" && first != "ORDER" &&
+			first != "INNER" && first != "LEFT" && first != "RIGHT" && first != "" {
+			return words[0]
+		}
+	}
+	return tableName
+}
+
+func injectRowFilter(query string, rowAccess *RowAccess, userName string, perm *Permission) string {
+	upper := strings.ToUpper(strings.TrimSpace(query))
+	limitClause := ""
+	innerQuery := strings.TrimRight(strings.TrimSpace(query), ";")
+
+	if idx := strings.LastIndex(upper, "LIMIT"); idx != -1 {
+		limitClause = " " + strings.TrimSpace(query[idx:])
+		innerQuery = strings.TrimSpace(query[:idx])
+	}
+
+	// Find which view is in the query and get its alias
+	qualifiedColumn := rowAccess.TargetColumn
+	for tableName := range perm.Tables {
+		view := viewNameForRole(strings.ToUpper(perm.Assignee), tableName)
+		if strings.Contains(upper, strings.ToUpper(view)) {
+			alias := getTableAlias(innerQuery, view)
+			qualifiedColumn = alias + "." + rowAccess.TargetColumn
+			break
+		}
+	}
+
+	filter := fmt.Sprintf(
+		"%s IN (SELECT %s FROM %s WHERE %s = '%s')",
+		qualifiedColumn,
 		rowAccess.DataColumn,
 		rowAccess.FilterTable,
 		rowAccess.UserColumn,
 		userName,
 	)
 
-	upper := strings.ToUpper(query)
-	if strings.Contains(upper, "WHERE") {
-		idx := strings.Index(upper, "WHERE")
-		return query[:idx+5] + " " + filter + " AND" + query[idx+5:]
-	} else if strings.Contains(upper, "LIMIT") {
-		idx := strings.Index(upper, "LIMIT")
-		return query[:idx] + "WHERE " + filter + " " + query[idx:]
+	upperInner := strings.ToUpper(innerQuery)
+	if strings.Contains(upperInner, "WHERE") {
+		idx := strings.Index(upperInner, "WHERE")
+		return innerQuery[:idx+5] + " " + filter + " AND " + innerQuery[idx+5:] + limitClause
 	}
-	return query + " WHERE " + filter
+	return innerQuery + " WHERE " + filter + limitClause
 }
 
 // replaceTableName does a case-insensitive whole-word replacement of a table name
