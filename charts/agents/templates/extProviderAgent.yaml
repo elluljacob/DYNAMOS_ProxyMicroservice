@@ -35,11 +35,13 @@ spec:
             - name: LAST
               value: "1"
             - name: JOB_NAME
-              value: "ext-provider-job"
+              value: "EXT-PROVIDER-in"
             - name: SIDECAR_PORT
               value: "50051"
             - name: POLICY_PATH
               value: "/config/snowflake_policy/agreements.json"
+            - name: POLICY_MODE
+              value: "inspired"
         - name: sidecar
           image: {{ .Values.dockerArtifactAccount }}/sidecar:{{ .Values.branchNameTag }}
           imagePullPolicy: Always

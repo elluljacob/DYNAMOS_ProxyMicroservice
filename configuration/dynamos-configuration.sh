@@ -161,6 +161,11 @@ sleep 1
 echo "Installing api gateway"
 helm upgrade -i -f "${api_gw_chart}/values.yaml" api-gateway ${api_gw_chart}
 
+echo "Re-pushing EXT-PROVIDER agreement with role field..."
+sleep 5
+kubectl exec -it etcd-0 -n core -c etcd -- etcdctl put /policyEnforcer/agreements/EXT-PROVIDER \
+  '{"name":"EXT-PROVIDER","relations":{"jacob.test@example.com":{"ID":"GUID","role":"DATA_STEWARD","requestTypes":["sqlDataRequest","genericRequest","pythonDataRequest"],"dataSets":["external_data"],"allowedArchetypes":["computeToData"],"allowedComputeProviders":["SURF"]},"jorrit.stutterheim@cloudnation.nl":{"ID":"GUID","role":"RESEARCHER","requestTypes":["sqlDataRequest","pythonDataRequest"],"dataSets":["external_data"],"allowedArchetypes":["computeToData"],"allowedComputeProviders":["SURF"]}},"computeProviders":["SURF"],"archetypes":["computeToData"]}'
+
 echo "Finished setting up DYNAMOS"
 
 exit 0

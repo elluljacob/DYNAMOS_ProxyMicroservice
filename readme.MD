@@ -350,3 +350,18 @@ See [RabbitMQ password process](#rabbitmq-password-process) and/or [Configure Ra
 - Use K9S or Kubectl to get shell access to RabbitMQ. Check whether there is a `definitions.json` file in `/mnt` with a hashed password
 - Check if a Kubernetes secret exists in the namespace of your crashing pod. `kubectl get secret "rabbit" -n <NAMESPACE> -o json | jq -r ".[\"data\"][\"password\"]" | base64 -d`
 Note, this password does not match the one in `definition.json`. But you can try hashing this password with rabbitctl and place it in the `defintions.json` to see if this was the issue.
+
+### Other Issues
+For other issues, first try looking at Troubleshooting.md
+
+# Cloud Integration
+
+## 15. Snowflake Integration (ext-provider)
+
+This repository includes `ext-provider`, a proxy microservice that integrates 
+DYNAMOS with Snowflake as a policy-compliant cloud agent. See the dedicated 
+documentation:
+
+- [ext-provider setup and configuration](./configuration/ext-provider/Readme.md)
+- [Policy format reference](./configuration/ext-provider/Policy.md)
+- [Troubleshooting](./Troubleshooting.md)

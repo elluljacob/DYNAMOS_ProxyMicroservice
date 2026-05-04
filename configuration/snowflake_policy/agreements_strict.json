@@ -1,0 +1,85 @@
+{
+  "@context": "http://www.w3.org/ns/odrl.jsonld",
+  "@type": "Set",
+  "uid": "urn:dynamos:policies:ext-provider-001",
+  "permission": [
+    {
+      "uid": "urn:dynamos:perm:researcher:personen:instcode",
+      "target": "urn:dynamos:dataset:PERSONEN#INSTCODE",
+      "action": "read",
+      "assignee": "urn:dynamos:role:RESEARCHER"
+    },
+    {
+      "uid": "urn:dynamos:perm:researcher:personen:unieknr",
+      "target": "urn:dynamos:dataset:PERSONEN#UNIEKNR",
+      "action": "read",
+      "assignee": "urn:dynamos:role:RESEARCHER"
+    },
+    {
+      "uid": "urn:dynamos:perm:researcher:personen:geslacht",
+      "target": "urn:dynamos:dataset:PERSONEN#GESLACHT",
+      "action": "read",
+      "assignee": "urn:dynamos:role:RESEARCHER"
+    },
+    {
+      "uid": "urn:dynamos:perm:researcher:personen:peildat",
+      "target": "urn:dynamos:dataset:PERSONEN#PEILDAT",
+      "action": "read",
+      "assignee": "urn:dynamos:role:RESEARCHER"
+    },
+    {
+      "uid": "urn:dynamos:perm:researcher:aanstellingen:instcode",
+      "target": "urn:dynamos:dataset:AANSTELLINGEN#INSTCODE",
+      "action": "read",
+      "assignee": "urn:dynamos:role:RESEARCHER"
+    },
+    {
+      "uid": "urn:dynamos:perm:researcher:aanstellingen:unieknr",
+      "target": "urn:dynamos:dataset:AANSTELLINGEN#UNIEKNR",
+      "action": "read",
+      "assignee": "urn:dynamos:role:RESEARCHER"
+    },
+    {
+      "uid": "urn:dynamos:perm:researcher:aanstellingen:functcat",
+      "target": "urn:dynamos:dataset:AANSTELLINGEN#FUNCTCAT",
+      "action": "read",
+      "assignee": "urn:dynamos:role:RESEARCHER"
+    },
+    {
+      "uid": "urn:dynamos:perm:researcher:aanstellingen:hoopgeb",
+      "target": "urn:dynamos:dataset:AANSTELLINGEN#HOOPGEB",
+      "action": "read",
+      "assignee": "urn:dynamos:role:RESEARCHER"
+    },
+    {
+      "uid": "urn:dynamos:perm:researcher:aanstellingen:taakomv",
+      "target": "urn:dynamos:dataset:AANSTELLINGEN#TAAKOMV",
+      "action": "read",
+      "assignee": "urn:dynamos:role:RESEARCHER"
+    },
+    {
+      "uid": "urn:dynamos:perm:researcher:aanstellingen:aanst22",
+      "target": "urn:dynamos:dataset:AANSTELLINGEN#AANST_22",
+      "action": "read",
+      "assignee": "urn:dynamos:role:RESEARCHER"
+    },
+    {
+      "uid": "urn:dynamos:perm:researcher:aanstellingen:peildat",
+      "target": "urn:dynamos:dataset:AANSTELLINGEN#PEILDAT",
+      "action": "read",
+      "assignee": "urn:dynamos:role:RESEARCHER"
+    },
+    {
+      "uid": "urn:dynamos:perm:datasteward:personen",
+      "target": "urn:dynamos:dataset:PERSONEN",
+      "action": "read",
+      "assignee": "urn:dynamos:role:DATA_STEWARD"
+    },
+    {
+      "uid": "urn:dynamos:perm:datasteward:aanstellingen",
+      "target": "urn:dynamos:dataset:AANSTELLINGEN",
+      "action": "read",
+      "assignee": "urn:dynamos:role:DATA_STEWARD"
+    }
+  ]
+}

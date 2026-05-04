@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 
@@ -36,10 +37,27 @@ type ODRLPolicy struct {
 	Permissions []Permission `json:"permissions"`
 }
 
+// Strict ODRL structs
+type StrictODRLPermission struct {
+	UID      string `json:"uid"`
+	Target   string `json:"target"`
+	Action   string `json:"action"`
+	Assignee string `json:"assignee"`
+}
+
+type StrictODRLPolicy struct {
+	Context    string                 `json:"@context"`
+	Type       string                 `json:"@type"`
+	UID        string                 `json:"uid"`
+	Permission []StrictODRLPermission `json:"permission"`
+}
+
 var (
 	globalPolicy   *ODRLPolicy
 	globalPolicyMu sync.RWMutex
 )
+
+var useStrictODRL = os.Getenv("POLICY_MODE") == "strict"
 
 func LoadPolicy(ctx context.Context, client *clientv3.Client) error {
 	resp, err := client.Get(ctx, policyEtcdKey)
@@ -90,21 +108,141 @@ func watchPolicy(ctx context.Context, client *clientv3.Client) {
 }
 
 func parseAndSetPolicy(ctx context.Context, data []byte) error {
-	var policy ODRLPolicy
-	if err := json.Unmarshal(data, &policy); err != nil {
-		return fmt.Errorf("failed to parse policy JSON: %w", err)
+	if useStrictODRL {
+		return parseAndSetStrictODRL(ctx, data)
 	}
 
-	// Create views in Snowflake for each role
+	var policy ODRLPolicy
+	if err := json.Unmarshal(data, &policy); err != nil {
+		return fmt.Errorf("failed to parse inspired policy JSON: %w", err)
+	}
 	if err := createViewsFromPolicy(ctx, &policy); err != nil {
 		return fmt.Errorf("failed to create views: %w", err)
 	}
-
 	globalPolicyMu.Lock()
 	globalPolicy = &policy
 	globalPolicyMu.Unlock()
-
 	logger.Sugar().Infof("Policy set: %s (%d permissions)", policy.UID, len(policy.Permissions))
+	return nil
+}
+
+func parseAndSetStrictODRL(ctx context.Context, data []byte) error {
+	var strict StrictODRLPolicy
+	if err := json.Unmarshal(data, &strict); err != nil {
+		return fmt.Errorf("failed to parse strict ODRL JSON: %w", err)
+	}
+
+	// Convert to internal format
+	// Group column permissions by role and table
+	type roleTable struct{ role, table string }
+	colMap := make(map[roleTable][]string)
+
+	for _, p := range strict.Permission {
+		// Extract role: "urn:dynamos:role:RESEARCHER" -> "RESEARCHER"
+		role := urnSuffix(p.Assignee)
+
+		target := p.Target
+		if strings.Contains(target, "#") {
+			// Column-level: "urn:dynamos:dataset:PERSONEN#INSTCODE"
+			parts := strings.SplitN(target, "#", 2)
+			table := urnSuffix(parts[0])
+			col := parts[1]
+			key := roleTable{role, table}
+			colMap[key] = append(colMap[key], col)
+		}
+		// Table-level permissions (no #) grant full access — handled below
+	}
+
+	// Build inspired policy
+	roleMap := make(map[string]*Permission)
+	for key, cols := range colMap {
+		if _, ok := roleMap[key.role]; !ok {
+			roleMap[key.role] = &Permission{
+				Assignee: key.role,
+				Tables:   make(map[string]TableConfig),
+			}
+		}
+		roleMap[key.role].Tables[key.table] = TableConfig{
+			Visible: cols,
+			Masked:  make(map[string]string),
+		}
+	}
+
+	// Handle table-level permissions (DATA_STEWARD gets all columns via SELECT *)
+	for _, p := range strict.Permission {
+		if !strings.Contains(p.Target, "#") {
+			role := urnSuffix(p.Assignee)
+			table := urnSuffix(p.Target)
+			if _, ok := roleMap[role]; !ok {
+				roleMap[role] = &Permission{
+					Assignee: role,
+					Tables:   make(map[string]TableConfig),
+				}
+			}
+			// Empty visible means all columns — we use SELECT * in the view
+			if _, exists := roleMap[role].Tables[table]; !exists {
+				roleMap[role].Tables[table] = TableConfig{
+					Visible: []string{},
+					Masked:  make(map[string]string),
+				}
+			}
+		}
+	}
+
+	inspired := &ODRLPolicy{
+		Context: strict.Context,
+		Type:    strict.Type,
+		UID:     strict.UID,
+	}
+	for _, perm := range roleMap {
+		inspired.Permissions = append(inspired.Permissions, *perm)
+	}
+
+	if err := createViewsFromStrictPolicy(ctx, inspired); err != nil {
+		return fmt.Errorf("failed to create views from strict ODRL: %w", err)
+	}
+
+	globalPolicyMu.Lock()
+	globalPolicy = inspired
+	globalPolicyMu.Unlock()
+	logger.Sugar().Infof("Strict ODRL policy set: %s", strict.UID)
+	return nil
+}
+
+func urnSuffix(urn string) string {
+	parts := strings.Split(urn, ":")
+	return parts[len(parts)-1]
+}
+
+func createViewsFromStrictPolicy(ctx context.Context, policy *ODRLPolicy) error {
+	for _, perm := range policy.Permissions {
+		role := strings.ToUpper(perm.Assignee)
+		for tableName, tableConfig := range perm.Tables {
+			viewName := fmt.Sprintf("%s_%s", tableName, role)
+
+			var ddl string
+			if len(tableConfig.Visible) == 0 {
+				// Full table access — DATA_STEWARD
+				ddl = fmt.Sprintf("CREATE OR REPLACE VIEW %s AS SELECT * FROM %s", viewName, tableName)
+			} else {
+				cols := make([]string, 0, len(tableConfig.Visible))
+				for _, col := range tableConfig.Visible {
+					cols = append(cols, strings.ToUpper(col))
+				}
+				ddl = fmt.Sprintf(
+					"CREATE OR REPLACE VIEW %s AS SELECT %s FROM %s",
+					viewName,
+					strings.Join(cols, ", "),
+					tableName,
+				)
+			}
+
+			logger.Sugar().Infof("Creating view (strict ODRL): %s", viewName)
+			if _, _, err := QuerySnowflake(ctx, ddl); err != nil {
+				return fmt.Errorf("failed to create view %s: %w", viewName, err)
+			}
+		}
+	}
 	return nil
 }
 
