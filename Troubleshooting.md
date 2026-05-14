@@ -60,3 +60,17 @@ http://prometheus-server.default.svc.cluster.local:80
 ```
 
 4. Click **Save & Test** — it should return a green confirmation
+
+
+## Policy-Based Issues
+
+In some cases, there may be issues with agreement not being the latest version in etcd, possibly resulting in errors such as the external provider not being able to be resolved. This issue occurs randomly and is typically caused by the agreement not being properly registered in the policy store.
+
+To manually restore the agreement, you should execute a command such as the following:
+
+```bash
+kubectl exec -it etcd-0 -n core -c etcd -- etcdctl put /policyEnforcer/agreements/EXT-PROVIDER \
+'{"name":"EXT-PROVIDER","relations":{"jacob.test@example.com":{"ID":"GUID","role":"DATA_STEWARD","requestTypes":["sqlDataRequest","genericRequest","pythonDataRequest"],"dataSets":["external_data"],"allowedArchetypes":["computeToData"],"allowedComputeProviders":["SURF"]},"jorrit.stutterheim@cloudnation.nl":{"ID":"GUID","role":"RESEARCHER","requestTypes":["sqlDataRequest","pythonDataRequest"],"dataSets":["external_data"],"allowedArchetypes":["computeToData"],"allowedComputeProviders":["SURF"]}},"computeProviders":["SURF"],"archetypes":["computeToData"]}'
+```
+
+This can be done for any of the agreements should an issue occur with them, just change the endpoint and the body respectively.

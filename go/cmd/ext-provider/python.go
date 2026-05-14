@@ -6,6 +6,11 @@ import (
 	"strings"
 )
 
+// ExecutePython rewrites Python code to use role-appropriate views, wraps it in
+// a Snowflake stored procedure, executes it, and returns the result string.
+//
+// The procedure is created (or replaced) on every call, so it always reflects
+// the current policy and submitted code.
 func ExecutePython(ctx context.Context, role, pythonCode, userName string) (string, error) {
 	if pythonCode == "" {
 		return "", fmt.Errorf("no python code provided")
@@ -14,7 +19,6 @@ func ExecutePython(ctx context.Context, role, pythonCode, userName string) (stri
 	rewrittenCode := rewritePythonTableRefs(role, pythonCode, userName)
 	procName := fmt.Sprintf("DYNAMOS_PROC_%s", strings.ToUpper(role))
 
-	// Extract just the function body if user submitted a full def run(...): block
 	body := extractFunctionBody(rewrittenCode)
 
 	createProc := fmt.Sprintf(`CREATE OR REPLACE PROCEDURE %s()
@@ -50,16 +54,16 @@ $$`, procName, indentCode(body))
 		return "0", nil
 	}
 
-	// The procedure returns a single string value — return it directly
 	return strings.TrimSpace(rows[0][0]), nil
 }
 
-// extractFunctionBody strips the "def run(...):" wrapper if present,
-// returning just the indented body lines
+// extractFunctionBody strips a "def run(...):" wrapper when present, returning
+// only the body lines with one level of indentation removed.  If no such
+// wrapper is found the code is returned as-is, on the assumption that it is
+// already a bare function body ready for embedding in the stored procedure.
 func extractFunctionBody(code string) string {
 	lines := strings.Split(strings.TrimSpace(code), "\n")
 
-	// Find the def run line and extract everything after it
 	bodyStart := -1
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
@@ -70,18 +74,16 @@ func extractFunctionBody(code string) string {
 	}
 
 	if bodyStart == -1 || bodyStart >= len(lines) {
-		// No def run found, assume it's already just the body
 		return code
 	}
 
-	// Extract body lines and strip one level of indentation
 	bodyLines := lines[bodyStart:]
 	dedented := make([]string, 0, len(bodyLines))
 	for _, line := range bodyLines {
 		if strings.HasPrefix(line, "    ") {
-			dedented = append(dedented, line[4:]) // strip 4 spaces
+			dedented = append(dedented, line[4:])
 		} else if strings.HasPrefix(line, "\t") {
-			dedented = append(dedented, line[1:]) // strip one tab
+			dedented = append(dedented, line[1:])
 		} else {
 			dedented = append(dedented, line)
 		}
@@ -90,6 +92,8 @@ func extractFunctionBody(code string) string {
 	return strings.Join(dedented, "\n")
 }
 
+// indentCode adds four spaces to every non-empty line, producing a block
+// suitable for embedding as the body of a Snowflake Python stored procedure.
 func indentCode(code string) string {
 	lines := strings.Split(strings.TrimSpace(code), "\n")
 	indented := make([]string, len(lines))
@@ -103,7 +107,9 @@ func indentCode(code string) string {
 	return strings.Join(indented, "\n")
 }
 
-// rewritePythonTableRefs replaces table names in Python code with role-appropriate views
+// rewritePythonTableRefs replaces bare table names in Python code with the
+// role-appropriate view names and, when the permission includes a RowAccess
+// policy, appends a Snowpark .where() filter to every session.table() call.
 func rewritePythonTableRefs(role, code, userName string) string {
 	globalPolicyMu.RLock()
 	policy := globalPolicy
@@ -130,7 +136,6 @@ func rewritePythonTableRefs(role, code, userName string) string {
 		rewritten = replaceTableName(rewritten, tableName, view)
 	}
 
-	// For Python, inject the filter as a .filter() call after .table()
 	if perm.RowAccess != nil {
 		rewritten = injectPythonRowFilter(rewritten, perm.RowAccess, userName)
 	}
@@ -138,37 +143,19 @@ func rewritePythonTableRefs(role, code, userName string) string {
 	return rewritten
 }
 
+// injectPythonRowFilter appends a Snowpark .where() call to every
+// session.table() expression in code, restricting rows to those the user is
+// authorised to see.
+//
+// The filter is expressed as a SQL string passed to .where(), which Snowpark
+// pushes down to the warehouse. Column scoping is already handled by the view;
+// this filter addresses row-level access only.
+//
+// Note: this approach rewrites at the source level by locating the closing
+// parenthesis of each .table(...) call and inserting the .where(...) chain
+// immediately after. It does not parse the AST, so nested or multi-line
+// .table() calls may not be handled correctly.
 func injectPythonRowFilter(code string, rowAccess *RowAccess, userName string) string {
-	// Replace session.table("X") with session.table("X").filter(col("INSTCODE").isin(...))
-	// Simpler: just append a SQL WHERE via session.sql instead
-	// We inject a filter comment that the user can see, and wrap the logic
-	filter := fmt.Sprintf(
-		`.filter(session._conn._cursor.execute("SELECT %s FROM %s WHERE %s = '%s'"))`,
-		rowAccess.DataColumn,
-		rowAccess.FilterTable,
-		rowAccess.UserColumn,
-		userName,
-	)
-	// Actually the cleanest approach for Snowpark Python is to use a subquery in the filter
-	// Replace .table("VIEW") with .table("VIEW").filter(F.col("INSTCODE").isin([...]))
-	// But since we can't execute SQL in the view creation, inject as a where string
-	_ = filter
-
-	// Inject as a SQL WHERE clause into any session.sql() calls, or
-	// wrap table calls with a filter — simplest is to rewrite to session.sql()
-	subquery := fmt.Sprintf(
-		"SELECT * FROM %s WHERE %s IN (SELECT %s FROM %s WHERE %s = '%s')",
-		// This gets filled per table — for simplicity just add to the code as a comment
-		// and rely on the view already being role-scoped
-		"__TABLE__", rowAccess.TargetColumn,
-		rowAccess.DataColumn, rowAccess.FilterTable,
-		rowAccess.UserColumn, userName,
-	)
-	logger.Sugar().Debugf("Python row filter subquery template: %s", subquery)
-
-	// For Python the view already scopes columns — add row filter via .where()
-	// Replace: session.table("PERSONEN_RESEARCHER")
-	// With:    session.table("PERSONEN_RESEARCHER").where(f"INSTCODE IN (SELECT INSTCODE FROM USER_ACCESS WHERE EMAIL = 'jorrit@...')")
 	filterExpr := fmt.Sprintf(
 		`.where("%s IN (SELECT %s FROM %s WHERE %s = '%s')")`,
 		rowAccess.TargetColumn,
@@ -178,22 +165,17 @@ func injectPythonRowFilter(code string, rowAccess *RowAccess, userName string) s
 		userName,
 	)
 
-	// Apply after every .table("...") call
-	result := strings.ReplaceAll(code, ".table(", ".table(")
-	// Find all .table("...") occurrences and append .where(...)
-	lines := strings.Split(result, "\n")
+	lines := strings.Split(code, "\n")
 	for i, line := range lines {
-		if strings.Contains(line, ".table(") {
-			lines[i] = strings.Replace(line, ".table(", ".table(", 1)
-			// Append filter at end of the table() call
-			// Find the closing paren
-			tableIdx := strings.Index(lines[i], ".table(")
-			rest := lines[i][tableIdx:]
-			closeIdx := strings.Index(rest, ")")
-			if closeIdx != -1 {
-				insertAt := tableIdx + closeIdx + 1
-				lines[i] = lines[i][:insertAt] + filterExpr + lines[i][insertAt:]
-			}
+		if !strings.Contains(line, ".table(") {
+			continue
+		}
+		tableIdx := strings.Index(line, ".table(")
+		rest := line[tableIdx:]
+		closeIdx := strings.Index(rest, ")")
+		if closeIdx != -1 {
+			insertAt := tableIdx + closeIdx + 1
+			lines[i] = line[:insertAt] + filterExpr + line[insertAt:]
 		}
 	}
 	return strings.Join(lines, "\n")

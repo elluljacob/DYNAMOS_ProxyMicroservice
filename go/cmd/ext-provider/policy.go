@@ -11,13 +11,20 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
+// policyEtcdKey is the etcd key under which the active data policy is stored.
 const policyEtcdKey = "/policyEnforcer/dataPolicy/EXT-PROVIDER"
 
+// TableConfig describes which columns a role may see in plain text and which
+// must be replaced with a static mask value.
 type TableConfig struct {
 	Visible []string          `json:"visible"`
 	Masked  map[string]string `json:"masked"`
 }
 
+// RowAccess defines a sub-query filter that restricts the rows a user can
+// retrieve. The enforcer rewrites queries to add a WHERE clause of the form:
+//
+//	<TargetColumn> IN (SELECT <DataColumn> FROM <FilterTable> WHERE <UserColumn> = '<user>')
 type RowAccess struct {
 	FilterTable  string `json:"filterTable"`
 	UserColumn   string `json:"userColumn"`
@@ -25,11 +32,17 @@ type RowAccess struct {
 	TargetColumn string `json:"targetColumn"`
 }
 
+// Permission maps a single assignee (role) to the tables it may access and any
+// optional row-level filter that applies to that role.
 type Permission struct {
 	Assignee  string                 `json:"assignee"`
 	RowAccess *RowAccess             `json:"rowAccess"`
 	Tables    map[string]TableConfig `json:"tables"`
 }
+
+// ODRLPolicy is the internal (inspired) policy representation used by the
+// enforcer. It is either parsed directly from etcd or converted from a strict
+// ODRL document.
 type ODRLPolicy struct {
 	Context     string       `json:"@context"`
 	Type        string       `json:"@type"`
@@ -37,7 +50,8 @@ type ODRLPolicy struct {
 	Permissions []Permission `json:"permissions"`
 }
 
-// Strict ODRL structs
+// StrictODRLPermission represents a single permission entry in a standards-
+// compliant ODRL policy document.
 type StrictODRLPermission struct {
 	UID      string `json:"uid"`
 	Target   string `json:"target"`
@@ -45,6 +59,8 @@ type StrictODRLPermission struct {
 	Assignee string `json:"assignee"`
 }
 
+// StrictODRLPolicy is a standards-compliant ODRL policy document as stored in
+// etcd when POLICY_MODE=strict.
 type StrictODRLPolicy struct {
 	Context    string                 `json:"@context"`
 	Type       string                 `json:"@type"`
@@ -53,12 +69,18 @@ type StrictODRLPolicy struct {
 }
 
 var (
+	// globalPolicy is the active policy used to rewrite queries.  It is
+	// replaced atomically on every hot-reload.
 	globalPolicy   *ODRLPolicy
 	globalPolicyMu sync.RWMutex
 )
 
+// useStrictODRL selects the strict ODRL parser when POLICY_MODE=strict.
+// When unset the enforcer uses the inspired (internal) policy format.
 var useStrictODRL = os.Getenv("POLICY_MODE") == "strict"
 
+// LoadPolicy fetches the policy from etcd, applies it, and starts a background
+// watcher that hot-reloads the policy whenever the etcd key changes.
 func LoadPolicy(ctx context.Context, client *clientv3.Client) error {
 	resp, err := client.Get(ctx, policyEtcdKey)
 	if err != nil {
@@ -77,6 +99,9 @@ func LoadPolicy(ctx context.Context, client *clientv3.Client) error {
 	return nil
 }
 
+// watchPolicy blocks on the etcd watch channel and reloads the policy each
+// time the key is updated. A delete event is treated as a no-op so that the
+// last known policy continues to be enforced until a replacement is written.
 func watchPolicy(ctx context.Context, client *clientv3.Client) {
 	watchChan := client.Watch(ctx, policyEtcdKey)
 	logger.Sugar().Infof("Watching for policy changes at: %s", policyEtcdKey)
@@ -107,6 +132,8 @@ func watchPolicy(ctx context.Context, client *clientv3.Client) {
 	}
 }
 
+// parseAndSetPolicy dispatches to the appropriate parser based on POLICY_MODE
+// and atomically replaces the global policy on success.
 func parseAndSetPolicy(ctx context.Context, data []byte) error {
 	if useStrictODRL {
 		return parseAndSetStrictODRL(ctx, data)
@@ -126,6 +153,12 @@ func parseAndSetPolicy(ctx context.Context, data []byte) error {
 	return nil
 }
 
+// parseAndSetStrictODRL parses a standards-compliant ODRL document and converts
+// it to the internal policy format before applying it.
+//
+// Column-level targets are identified by the presence of a '#' separator
+// (e.g. "urn:dynamos:dataset:PERSONEN#INSTCODE"). Table-level targets (no '#')
+// grant full access to that table and are rendered as SELECT *.
 func parseAndSetStrictODRL(ctx context.Context, data []byte) error {
 	var strict StrictODRLPolicy
 	if err := json.Unmarshal(data, &strict); err != nil {
@@ -168,7 +201,8 @@ func parseAndSetStrictODRL(ctx context.Context, data []byte) error {
 		}
 	}
 
-	// Handle table-level permissions (DATA_STEWARD gets all columns via SELECT *)
+	// Roles with a table-level target (no column qualifier) receive SELECT *
+	// access.  An empty Visible slice signals this in createViewsFromStrictPolicy.
 	for _, p := range strict.Permission {
 		if !strings.Contains(p.Target, "#") {
 			role := urnSuffix(p.Assignee)
@@ -179,7 +213,6 @@ func parseAndSetStrictODRL(ctx context.Context, data []byte) error {
 					Tables:   make(map[string]TableConfig),
 				}
 			}
-			// Empty visible means all columns — we use SELECT * in the view
 			if _, exists := roleMap[role].Tables[table]; !exists {
 				roleMap[role].Tables[table] = TableConfig{
 					Visible: []string{},
@@ -209,11 +242,17 @@ func parseAndSetStrictODRL(ctx context.Context, data []byte) error {
 	return nil
 }
 
+// urnSuffix returns the last colon-delimited segment of a URN.
+// For example, "urn:dynamos:role:RESEARCHER" returns "RESEARCHER".
 func urnSuffix(urn string) string {
 	parts := strings.Split(urn, ":")
 	return parts[len(parts)-1]
 }
 
+// createViewsFromStrictPolicy creates one Snowflake view per role per table for
+// a policy that was converted from strict ODRL. When Visible is empty the view
+// selects all columns (SELECT *), which is used for roles with table-level
+// access such as DATA_STEWARD.
 func createViewsFromStrictPolicy(ctx context.Context, policy *ODRLPolicy) error {
 	for _, perm := range policy.Permissions {
 		role := strings.ToUpper(perm.Assignee)
@@ -246,7 +285,10 @@ func createViewsFromStrictPolicy(ctx context.Context, policy *ODRLPolicy) error 
 	return nil
 }
 
-// createViewsFromPolicy creates a Snowflake view per role per table
+// createViewsFromPolicy creates one Snowflake view per role per table from an
+// inspired (internal) policy. Masked columns are emitted as string literals
+// rather than the underlying column value, preserving the column name in the
+// view schema while hiding the data.
 func createViewsFromPolicy(ctx context.Context, policy *ODRLPolicy) error {
 	for _, perm := range policy.Permissions {
 		role := strings.ToUpper(perm.Assignee)
@@ -263,7 +305,7 @@ func createViewsFromPolicy(ctx context.Context, policy *ODRLPolicy) error {
 					cols = append(cols, upper)
 				}
 			}
-			// Also include masked columns that aren't in visible
+			// Include masked columns that were not listed in Visible.
 			for col, maskVal := range tableConfig.Masked {
 				upper := strings.ToUpper(col)
 				found := false
@@ -294,12 +336,19 @@ func createViewsFromPolicy(ctx context.Context, policy *ODRLPolicy) error {
 	return nil
 }
 
-// viewNameForRole returns the view name for a given role and table
+// viewNameForRole returns the Snowflake view name for the given role and base
+// table, following the convention <TABLE>_<ROLE>.
 func viewNameForRole(role, table string) string {
 	return fmt.Sprintf("%s_%s", strings.ToUpper(table), strings.ToUpper(role))
 }
 
-// RewriteQuery rewrites table names in the query to use role-appropriate views
+// RewriteQuery replaces bare table names in query with the role-appropriate
+// view names and, when the permission includes a RowAccess policy, injects a
+// WHERE clause that limits results to rows the user is authorised to see.
+//
+// If no permission is found for the given role the function falls back to the
+// RESEARCHER permission. An error is returned only when no matching permission
+// exists at all.
 func RewriteQuery(role, query, userName string) (string, error) {
 	if query == "" {
 		return "", fmt.Errorf("empty query")
@@ -346,6 +395,10 @@ func RewriteQuery(role, query, userName string) (string, error) {
 	return rewritten, nil
 }
 
+// getTableAlias returns the alias used for tableName in query, or tableName
+// itself when no alias is present. It works by finding the table reference and
+// checking whether the next token is a SQL keyword; if not, that token is the
+// alias.
 func getTableAlias(query, tableName string) string {
 	upper := strings.ToUpper(query)
 	tableUpper := strings.ToUpper(tableName)
@@ -371,6 +424,10 @@ func getTableAlias(query, tableName string) string {
 	return tableName
 }
 
+// injectRowFilter wraps query with a sub-select filter derived from rowAccess.
+// Any existing LIMIT clause is preserved and re-appended after the filter.
+// The filter column is qualified with the table alias found in the query to
+// avoid ambiguity in joins.
 func injectRowFilter(query string, rowAccess *RowAccess, userName string, perm *Permission) string {
 	upper := strings.ToUpper(strings.TrimSpace(query))
 	limitClause := ""
@@ -409,10 +466,10 @@ func injectRowFilter(query string, rowAccess *RowAccess, userName string, perm *
 	return innerQuery + " WHERE " + filter + limitClause
 }
 
-// replaceTableName does a case-insensitive whole-word replacement of a table name
+// replaceTableName performs a case-insensitive, whole-word replacement of table
+// with view inside query. It avoids replacing substrings that are part of a
+// longer identifier (e.g. it will not replace PERSONEN inside PERSONEN_RESEARCHER).
 func replaceTableName(query, table, view string) string {
-	// Use word boundaries to avoid replacing partial matches
-	// e.g. don't replace PERSONEN inside PERSONEN_RESEARCHER
 	upper := strings.ToUpper(query)
 	tableUpper := strings.ToUpper(table)
 	viewUpper := strings.ToUpper(view)
@@ -429,7 +486,6 @@ func replaceTableName(query, table, view string) string {
 			break
 		}
 
-		// Check it's a whole word (not part of a longer identifier like PERSONEN_RESEARCHER)
 		end := idx + len(tableUpper)
 		before := idx == 0 || !isIdentChar(rune(remaining[idx-1]))
 		after := end >= len(remaining) || !isIdentChar(rune(remaining[end]))
@@ -448,11 +504,14 @@ func replaceTableName(query, table, view string) string {
 	return result.String()
 }
 
+// isIdentChar reports whether r is a valid SQL identifier character.
 func isIdentChar(r rune) bool {
 	return r == '_' || (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
 }
 
-// getRoleForUser looks up a user's role from the EXT-PROVIDER agreement in etcd
+// getRoleForUser looks up the role assigned to userName in the EXT-PROVIDER
+// agreement stored in etcd. If the agreement cannot be read or the user is not
+// listed, it defaults to RESEARCHER.
 func getRoleForUser(userName string) string {
 	resp, err := etcdClient.Get(context.Background(), "/policyEnforcer/agreements/EXT-PROVIDER")
 	if err != nil || len(resp.Kvs) == 0 {

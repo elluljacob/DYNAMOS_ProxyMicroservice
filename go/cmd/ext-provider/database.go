@@ -44,7 +44,7 @@ func InitDB() error {
 }
 
 // QuerySnowflake handles the execution using the existing pool
-// QuerySnowflake returns structured rows and column names
+// and returns structured rows and column names
 func QuerySnowflake(ctx context.Context, query string) ([][]string, []string, error) {
 	if snowflakeDB == nil {
 		if err := InitDB(); err != nil {
